@@ -109,9 +109,11 @@ class DecoderLayer(nn.Module):
         self.ln_ffn = nn.LayerNorm(normalized_shape=d_model)
 
     def forward(self, x: DecoderInput) -> DecoderInput:
+        t = x.decoder_input.shape[1]
         m_mha_x = self.ln_m_mha(x.decoder_input +
                                 self.mask_mha(x.decoder_input, x.decoder_input, x.decoder_input, x.decoder_mask))
-        mha_x = self.ln_mha(m_mha_x + self.mha(m_mha_x, x.encoder_output, x.encoder_output, x.encoder_mask))
+        mha_x = self.ln_mha(m_mha_x + self.mha(m_mha_x, x.encoder_output, x.encoder_output,
+                                               x.encoder_mask[:, :t, :]))
         return DecoderInput(encoder_mask=x.encoder_mask, encoder_output=x.encoder_output,
                             decoder_input=self.ln_ffn(mha_x + self.ffn(mha_x)), decoder_mask=x.decoder_mask)
 
@@ -132,8 +134,10 @@ class Transformer(nn.Module):
             nn.Linear(in_features=d_model, out_features=num_classes),
             nn.Softmax(dim=-1)
         )
+        self.output_embedder = lambda x: torch.rand(x.shape[0], 300)
 
-    def forward(self, encoder_input, decoder_input, encoder_mask, decoder_mask):
+    def forward(self, encoder_input: torch.Tensor, decoder_input: torch.Tensor, encoder_mask: torch.Tensor,
+                decoder_mask: torch.Tensor) -> torch.Tensor:
         b, n, dk = encoder_input.shape
         pe = PE(b, n, dk, dk)
         encoder_output = self.encoder(EncoderInput(encoder_input+pe, encoder_mask))
@@ -141,3 +145,28 @@ class Transformer(nn.Module):
                                                    encoder_mask=encoder_mask, decoder_input=decoder_input + pe,
                                                    decoder_mask=decoder_mask))
         return self.predictor(decoder_output.decoder_input)
+
+    def infer(self, encoder_input: torch.Tensor, encoder_mask: torch.Tensor) -> torch.Tensor:
+        b, n, dk = encoder_input.shape
+        pe = PE(b, n, dk, dk)
+        encoder_output = self.encoder(EncoderInput(encoder_input+pe, encoder_mask)).encoder_input
+        decoder_output = torch.ones(b, 1, dk)  # todo
+        for t in range(n-1):
+            decoder_step = self.decoder(DecoderInput(encoder_output=encoder_output, encoder_mask=encoder_mask,
+                                                     decoder_input=decoder_output, decoder_mask=Mask((b, t+1, t+1)))).\
+                decoder_input
+            prob_t = self.predictor(decoder_step[:, -1])
+            class_t = prob_t.argmax(dim=-1)
+            emb_t = self.output_embedder(class_t).unsqueeze(1)
+            decoder_output = torch.cat([decoder_output, emb_t], dim=1)
+        return decoder_output
+
+def test():
+    t = Transformer(5)
+    encoder_input = torch.rand(5, 3, 300)
+    encoder_mask = torch.ones(5, 3, 3)
+    decoder_input = torch.rand(5, 3, 300)
+    decoder_mask = Mask((5,3,3))
+    t.infer(encoder_input, encoder_mask)
+    t.forward(encoder_input, decoder_input, encoder_mask, decoder_mask)
+
