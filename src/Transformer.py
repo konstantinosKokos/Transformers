@@ -1,20 +1,19 @@
 from typing import NamedTuple, Optional, Callable, Iterable, Any, Union, Tuple
 from torch.nn import functional as F
+from torch import Tensor, nn
 import torch
-from torch import nn
 import math
 import numpy as np
 
-
-tensor_map = Callable[[Any], torch.Tensor]
+tensor_map = Callable[[Any], Tensor]
 tensor_maps = Iterable[tensor_map]
-EncoderInput = NamedTuple('EncoderInput', [('encoder_input', torch.Tensor), ('mask', Optional[torch.Tensor])])
-DecoderInput = NamedTuple('DecoderInput', [('encoder_output', torch.Tensor), ('decoder_input', torch.Tensor),
-                                           ('encoder_mask', Optional[torch.Tensor]), ('decoder_mask', torch.Tensor)])
+EncoderInput = NamedTuple('EncoderInput', [('encoder_input', Tensor), ('mask', Optional[Tensor])])
+DecoderInput = NamedTuple('DecoderInput', [('encoder_output', Tensor), ('decoder_input', Tensor),
+                                           ('encoder_mask', Optional[Tensor]), ('decoder_mask', Tensor)])
 
 
-def ScaledDotProduct(queries: torch.Tensor, keys: torch.Tensor, values: torch.Tensor,
-                     mask: Optional[torch.Tensor]=None) -> torch.Tensor:
+def ScaledDotProduct(queries: Tensor, keys: Tensor, values: Tensor,
+                     mask: Optional[Tensor] = None) -> Tensor:
     b, _, dk = keys.shape
     weights = torch.bmm(queries, keys.transpose(2, 1)) / math.sqrt(dk)  # [B, M, N]
     if mask is not None:
@@ -23,9 +22,9 @@ def ScaledDotProduct(queries: torch.Tensor, keys: torch.Tensor, values: torch.Te
     return torch.bmm(weights, values)
 
 
-def MultiHeadAttentionFn(queries: torch.Tensor, keys: torch.Tensor, values: torch.Tensor,
+def MultiHeadAttentionFn(queries: Tensor, keys: Tensor, values: Tensor,
                          qts: tensor_maps, kts: tensor_maps, vts: tensor_maps, wo: tensor_map,
-                         mask: Optional[torch.Tensor]=None) -> torch.Tensor:
+                         mask: Optional[Tensor] = None) -> Tensor:
     qs = [qt(queries) for qt in qts]
     ks = [kt(keys) for kt in kts]
     vs = [vt(values) for vt in vts]
@@ -43,10 +42,10 @@ class MultiHeadAttention(nn.Module):
                                                 for _ in range(num_heads)])
         self.v_transformations = nn.ModuleList([nn.Linear(in_features=d_model, out_features=d_v, bias=False)
                                                 for _ in range(num_heads)])
-        self.Wo = nn.Linear(in_features=num_heads*d_v, out_features=d_model, bias=False)
+        self.Wo = nn.Linear(in_features=num_heads * d_v, out_features=d_model, bias=False)
 
-    def forward(self, queries: torch.Tensor, keys: torch.Tensor, values: torch.Tensor,
-                mask: Optional[torch.Tensor]=None) -> torch.Tensor:
+    def forward(self, queries: Tensor, keys: Tensor, values: Tensor,
+                mask: Optional[Tensor] = None) -> Tensor:
         return MultiHeadAttentionFn(queries, keys, values, self.q_transformations, self.k_transformations,
                                     self.v_transformations, self.Wo, mask)
 
@@ -60,7 +59,7 @@ class FFN(nn.Module):
             nn.Linear(in_features=d_intermediate, out_features=d_model)
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: Tensor) -> Tensor:
         return self.network(x)
 
 
@@ -83,7 +82,7 @@ def Encoder(num_layers: int, num_heads: int, d_model: int, d_k: int, d_v: int, d
     return nn.Sequential(*layers)
 
 
-def PE(b: int, n: int, d_inp: int, d_model: int, freq: int=10000) -> torch.Tensor:
+def PE(b: int, n: int, d_inp: int, d_model: int, freq: int = 10000) -> Tensor:
     pe = torch.zeros(n, d_model).float()
     position = torch.arange(0, n).unsqueeze(1).float()
     div_term = torch.exp(torch.arange(0, d_inp, 2).float() *
@@ -93,7 +92,7 @@ def PE(b: int, n: int, d_inp: int, d_model: int, freq: int=10000) -> torch.Tenso
     return pe.repeat(b, 1, 1)
 
 
-def Mask(size: Union[Tuple[int, int], Tuple[int, int, int]]) -> torch.Tensor:
+def Mask(size: Union[Tuple[int, int], Tuple[int, int, int]]) -> Tensor:
     mask = np.triu(np.ones(size), k=1)
     return torch.from_numpy(mask) == 0
 
@@ -123,50 +122,57 @@ def Decoder(num_layers: int, num_heads: int, d_model: int, d_k: int, d_v: int, d
 
 
 class Transformer(nn.Module):
-    def __init__(self, num_classes: int, encoder_layers: int=6, num_heads: int=8, decoder_layers: int=6,
-                 d_model: int=300, d_intermediate: int=128) -> None:
+    def __init__(self, num_classes: int, output_embedder: Callable[[Any], Tensor],
+                 encoder_layers: int = 6, num_heads: int = 8, decoder_layers: int = 6, d_model: int = 300,
+                 d_intermediate: int = 128, device: str='cpu') -> None:
+        self.device = device
         super(Transformer, self).__init__()
-        self.encoder = Encoder(num_layers=encoder_layers, num_heads=num_heads, d_model=d_model, d_k=d_model//num_heads,
-                               d_v=d_model//num_heads, d_intermediate=d_intermediate)
-        self.decoder = Decoder(num_layers=decoder_layers, num_heads=num_heads, d_model=d_model, d_k=d_model//num_heads,
-                               d_v=d_model//num_heads, d_intermediate=d_intermediate)
+        self.encoder = Encoder(num_layers=encoder_layers, num_heads=num_heads, d_model=d_model,
+                               d_k=d_model // num_heads, d_v=d_model // num_heads,
+                               d_intermediate=d_intermediate).to(self.device)
+        self.decoder = Decoder(num_layers=decoder_layers, num_heads=num_heads, d_model=d_model,
+                               d_k=d_model // num_heads, d_v=d_model // num_heads,
+                               d_intermediate=d_intermediate).to(self.device)
         self.predictor = nn.Sequential(
             nn.Linear(in_features=d_model, out_features=num_classes),
             nn.Softmax(dim=-1)
-        )
-        self.output_embedder = lambda x: torch.rand(x.shape[0], 300)
+        ).to(self.device)
+        self.output_embedder = output_embedder
 
-    def forward(self, encoder_input: torch.Tensor, decoder_input: torch.Tensor, encoder_mask: torch.Tensor,
-                decoder_mask: torch.Tensor) -> torch.Tensor:
+    def forward(self, encoder_input: Tensor, decoder_input: Tensor, encoder_mask: Tensor,
+                decoder_mask: Tensor) -> Tensor:
         b, n, dk = encoder_input.shape
-        pe = PE(b, n, dk, dk)
-        encoder_output = self.encoder(EncoderInput(encoder_input+pe, encoder_mask))
+        pe = PE(b, n, dk, dk).to(self.device)
+        encoder_output = self.encoder(EncoderInput(encoder_input + pe, encoder_mask))
         decoder_output = self.decoder(DecoderInput(encoder_output=encoder_output.encoder_input,
                                                    encoder_mask=encoder_mask, decoder_input=decoder_input + pe,
                                                    decoder_mask=decoder_mask))
         return self.predictor(decoder_output.decoder_input)
 
-    def infer(self, encoder_input: torch.Tensor, encoder_mask: torch.Tensor) -> torch.Tensor:
+    def infer(self, encoder_input: Tensor, encoder_mask: Tensor) -> Tensor:
         b, n, dk = encoder_input.shape
-        pe = PE(b, n, dk, dk)
-        encoder_output = self.encoder(EncoderInput(encoder_input+pe, encoder_mask)).encoder_input
-        decoder_output = torch.ones(b, 1, dk)  # todo
-        for t in range(n-1):
+        pe = PE(b, n, dk, dk).to(self.device)
+        encoder_output = self.encoder(EncoderInput(encoder_input + pe, encoder_mask)).encoder_input
+        decoder_output = torch.ones(b, 1, dk).to(self.device)  # todo
+        for t in range(n - 1):
             decoder_step = self.decoder(DecoderInput(encoder_output=encoder_output, encoder_mask=encoder_mask,
-                                                     decoder_input=decoder_output, decoder_mask=Mask((b, t+1, t+1)))).\
-                decoder_input
+                                                     decoder_input=decoder_output,
+                                                     decoder_mask=Mask((b, t + 1, t + 1)).to(self.device)))\
+                .decoder_input
             prob_t = self.predictor(decoder_step[:, -1])
             class_t = prob_t.argmax(dim=-1)
             emb_t = self.output_embedder(class_t).unsqueeze(1)
             decoder_output = torch.cat([decoder_output, emb_t], dim=1)
         return decoder_output
 
-def test():
-    t = Transformer(5)
-    encoder_input = torch.rand(5, 3, 300)
-    encoder_mask = torch.ones(5, 3, 3)
-    decoder_input = torch.rand(5, 3, 300)
-    decoder_mask = Mask((5,3,3))
-    t.infer(encoder_input, encoder_mask)
-    t.forward(encoder_input, decoder_input, encoder_mask, decoder_mask)
 
+def test(device: str):
+    t = Transformer(5, lambda x: torch.rand(x.shape[0], 300), device=device)
+    encoder_input = torch.rand(5, 3, 300).to(device)
+    encoder_mask = torch.ones(5, 3, 3).to(device)
+    decoder_input = torch.rand(5, 3, 300).to(device)
+    decoder_mask = Mask((5, 3, 3)).to(device)
+    a_v = t.infer(encoder_input, encoder_mask)
+    b_v = t.forward(encoder_input, decoder_input, encoder_mask, decoder_mask)
+    import pdb
+    pdb.set_trace()
