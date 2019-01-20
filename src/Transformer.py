@@ -153,11 +153,12 @@ class Transformer(nn.Module):
                                                    decoder_mask=decoder_mask))
         return torch.log(sigsoftmax(self.predictor(decoder_output.decoder_input)))
 
-    def infer(self, encoder_input: Tensor, encoder_mask: Tensor) -> Tensor:
+    def infer(self, encoder_input: Tensor, encoder_mask: Tensor, sos_symbol: int) -> Tensor:
         b, n, dk = encoder_input.shape
         pe = PE(b, n, dk, dk).to(self.device)
         encoder_output = self.encoder(EncoderInput(encoder_input + pe, encoder_mask)).encoder_input
-        decoder_output = torch.ones(b, 1, dk).to(self.device)  # todo
+        sos_symbols = (torch.ones(b) * sos_symbol).long().to(self.device)
+        decoder_output = self.output_embedder(sos_symbols).unsqueeze(1)
         output_probs = torch.Tensor().to(self.device)
         for t in range(n):
             decoder_step = self.decoder(DecoderInput(encoder_output=encoder_output, encoder_mask=encoder_mask,
@@ -165,8 +166,6 @@ class Transformer(nn.Module):
                                                      decoder_mask=Mask((b, t + 1, t + 1)).to(self.device)))\
                 .decoder_input
             prob_t = self.predictor(decoder_step[:, -1])
-            import pdb
-            pdb.set_trace()
             output_probs = torch.cat([output_probs, prob_t.unsqueeze(1)], dim=1)
             class_t = prob_t.argmax(dim=-1)
             emb_t = self.output_embedder(class_t).unsqueeze(1)
@@ -181,7 +180,4 @@ def test(device: str):
     decoder_input = torch.rand(5, 3, 300).to(device)
     decoder_mask = Mask((5, 3, 3)).to(device)
     f_v = t.forward(encoder_input, decoder_input, encoder_mask, decoder_mask)
-    i_v = t.infer(encoder_input, encoder_mask)
-
-    import pdb
-    pdb.set_trace()
+    i_v = t.infer(encoder_input, encoder_mask, 32)
