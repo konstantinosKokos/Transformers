@@ -145,6 +145,8 @@ class Transformer(nn.Module):
 
     def forward(self, encoder_input: Tensor, decoder_input: Tensor, encoder_mask: Tensor,
                 decoder_mask: Tensor) -> Tensor:
+        self.train()
+
         b, n, dk = encoder_input.shape
         pe = PE(b, n, dk, dk).to(self.device)
         encoder_output = self.encoder(EncoderInput(encoder_input + pe, encoder_mask))
@@ -154,11 +156,13 @@ class Transformer(nn.Module):
         return torch.log(sigsoftmax(self.predictor(decoder_output.decoder_input)))
 
     def infer(self, encoder_input: Tensor, encoder_mask: Tensor, sos_symbol: int) -> Tensor:
+        self.eval()
+
         b, n, dk = encoder_input.shape
         pe = PE(b, n, dk, dk).to(self.device)
         encoder_output = self.encoder(EncoderInput(encoder_input + pe, encoder_mask)).encoder_input
         sos_symbols = (torch.ones(b) * sos_symbol).long().to(self.device)
-        decoder_output = self.output_embedder(sos_symbols).unsqueeze(1)
+        decoder_output = self.output_embedder(sos_symbols).unsqueeze(1) + pe[:, 0:1, :]
         output_probs = torch.Tensor().to(self.device)
         for t in range(n):
             decoder_step = self.decoder(DecoderInput(encoder_output=encoder_output, encoder_mask=encoder_mask,
@@ -168,7 +172,7 @@ class Transformer(nn.Module):
             prob_t = self.predictor(decoder_step[:, -1])
             output_probs = torch.cat([output_probs, prob_t.unsqueeze(1)], dim=1)
             class_t = prob_t.argmax(dim=-1)
-            emb_t = self.output_embedder(class_t).unsqueeze(1)
+            emb_t = self.output_embedder(class_t).unsqueeze(1) + pe[:, t+1:t+2, :]
             decoder_output = torch.cat([decoder_output, emb_t], dim=1)
         return output_probs
 
