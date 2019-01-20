@@ -151,7 +151,7 @@ class Transformer(nn.Module):
         decoder_output = self.decoder(DecoderInput(encoder_output=encoder_output.encoder_input,
                                                    encoder_mask=encoder_mask, decoder_input=decoder_input + pe,
                                                    decoder_mask=decoder_mask))
-        return sigsoftmax(self.predictor(decoder_output.decoder_input))
+        return torch.log(sigsoftmax(self.predictor(decoder_output.decoder_input)))
 
     def infer(self, encoder_input: Tensor, encoder_mask: Tensor) -> Tensor:
         b, n, dk = encoder_input.shape
