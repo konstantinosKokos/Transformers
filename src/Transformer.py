@@ -1,26 +1,40 @@
-from typing import NamedTuple, Optional, Callable, Iterable, Any, Union, Tuple
+from typing import NamedTuple, Optional, Callable, Iterable, Any, Union, Tuple, List
 from torch.nn import functional as F
-from torch import Tensor, nn
+from torch import nn
 import torch
 import math
 import numpy as np
 
+FloatTensor = Union[torch.cuda.FloatTensor, torch.FloatTensor]
+LongTensor = Union[torch.cuda.LongTensor, torch.LongTensor]
+Tensor = Union[FloatTensor, LongTensor]
 tensor_map = Callable[[Any], Tensor]
 tensor_maps = Iterable[tensor_map]
-EncoderInput = NamedTuple('EncoderInput', [('encoder_input', Tensor), ('mask', Optional[Tensor])])
-DecoderInput = NamedTuple('DecoderInput', [('encoder_output', Tensor), ('decoder_input', Tensor),
-                                           ('encoder_mask', Optional[Tensor]), ('decoder_mask', Tensor)])
+EncoderInput = NamedTuple('EncoderInput', [('encoder_input', FloatTensor), ('mask', Optional[LongTensor])])
+DecoderInput = NamedTuple('DecoderInput', [('encoder_output', FloatTensor), ('decoder_input', FloatTensor),
+                                           ('encoder_mask', Optional[LongTensor]), ('decoder_mask', LongTensor)])
 
 
-def sigsoftmax(x: Tensor) -> Tensor:
+def argmax_top_k(x: FloatTensor, k: int) -> List[Tuple[FloatTensor, LongTensor]]:
+    copy = x.clone().detach().requires_grad_(False)
+    ret = []
+    for repeat in range(k):
+        values, indices = torch.max(copy, dim=-1)
+        mask = torch.arange(x.size(-1)).reshape(1, -1).to(x.device) == indices.unsqueeze(-1)
+        copy[mask] = -float('inf')
+        ret.append((values, indices))
+    return ret
+
+
+def sigsoftmax(x: FloatTensor) -> FloatTensor:
     sigx = torch.sigmoid(x) * torch.exp(x)
     rank = len(sigx.shape)
     norm = torch.sum(sigx, dim=-1).unsqueeze(-1).repeat([1 for _ in range(rank-1)] + [sigx.shape[-1]])
     return sigx/norm
 
 
-def ScaledDotProduct(queries: Tensor, keys: Tensor, values: Tensor,
-                     mask: Optional[Tensor] = None) -> Tensor:
+def ScaledDotProduct(queries: FloatTensor, keys: FloatTensor, values: FloatTensor,
+                     mask: Optional[LongTensor] = None) -> FloatTensor:
     b, _, dk = keys.shape
     weights = torch.bmm(queries, keys.transpose(2, 1)) / math.sqrt(dk)  # [B, M, N]
     if mask is not None:
@@ -29,9 +43,9 @@ def ScaledDotProduct(queries: Tensor, keys: Tensor, values: Tensor,
     return torch.bmm(weights, values)
 
 
-def MultiHeadAttentionFn(queries: Tensor, keys: Tensor, values: Tensor,
+def MultiHeadAttentionFn(queries: FloatTensor, keys: FloatTensor, values: FloatTensor,
                          qts: tensor_maps, kts: tensor_maps, vts: tensor_maps, wo: tensor_map,
-                         mask: Optional[Tensor] = None) -> Tensor:
+                         mask: Optional[LongTensor] = None) -> FloatTensor:
     qs = [qt(queries) for qt in qts]
     ks = [kt(keys) for kt in kts]
     vs = [vt(values) for vt in vts]
@@ -51,8 +65,8 @@ class MultiHeadAttention(nn.Module):
                                                 for _ in range(num_heads)])
         self.Wo = nn.Linear(in_features=num_heads * d_v, out_features=d_model, bias=False)
 
-    def forward(self, queries: Tensor, keys: Tensor, values: Tensor,
-                mask: Optional[Tensor] = None) -> Tensor:
+    def forward(self, queries: FloatTensor, keys: FloatTensor, values: FloatTensor,
+                mask: Optional[LongTensor] = None) -> FloatTensor:
         return MultiHeadAttentionFn(queries, keys, values, self.q_transformations, self.k_transformations,
                                     self.v_transformations, self.Wo, mask)
 
@@ -66,7 +80,7 @@ class FFN(nn.Module):
             nn.Linear(in_features=d_intermediate, out_features=d_model)
         )
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, x: FloatTensor) -> FloatTensor:
         return self.network(x)
 
 
@@ -79,8 +93,11 @@ class EncoderLayer(nn.Module):
         self.ln_ffn = nn.LayerNorm(normalized_shape=d_model)
 
     def forward(self, x: EncoderInput) -> EncoderInput:
+        x = EncoderInput(encoder_input=F.dropout(x.encoder_input, p=0.1, training=self.training),
+                         mask=x.mask)
         mha_x = self.ln_mha(x.encoder_input + self.mha(x.encoder_input, x.encoder_input, x.encoder_input, x.mask))
-        return EncoderInput(self.ln_ffn(mha_x + self.ffn(mha_x)), x.mask)
+        return EncoderInput(encoder_input=self.ln_ffn(mha_x + self.ffn(mha_x)),
+                            mask=x.mask)
 
 
 def Encoder(num_layers: int, num_heads: int, d_model: int, d_k: int, d_v: int, d_intermediate: int) -> nn.Sequential:
@@ -89,7 +106,7 @@ def Encoder(num_layers: int, num_heads: int, d_model: int, d_k: int, d_v: int, d
     return nn.Sequential(*layers)
 
 
-def PE(b: int, n: int, d_inp: int, d_model: int, freq: int = 10000) -> Tensor:
+def PE(b: int, n: int, d_inp: int, d_model: int, freq: int = 10000) -> FloatTensor:
     pe = torch.zeros(n, d_model).float()
     position = torch.arange(0, n).unsqueeze(1).float()
     div_term = torch.exp(torch.arange(0, d_inp, 2).float() *
@@ -99,7 +116,7 @@ def PE(b: int, n: int, d_inp: int, d_model: int, freq: int = 10000) -> Tensor:
     return pe.repeat(b, 1, 1)
 
 
-def Mask(size: Union[Tuple[int, int], Tuple[int, int, int]]) -> Tensor:
+def Mask(size: Union[Tuple[int, int], Tuple[int, int, int]]) -> LongTensor:
     mask = np.triu(np.ones(size), k=1)
     return torch.from_numpy(mask) == 0
 
@@ -115,13 +132,19 @@ class DecoderLayer(nn.Module):
         self.ln_ffn = nn.LayerNorm(normalized_shape=d_model)
 
     def forward(self, x: DecoderInput) -> DecoderInput:
+        x = DecoderInput(encoder_mask=x.encoder_mask,
+                         encoder_output=x.encoder_output,
+                         decoder_input=F.dropout(x.decoder_input, 0.1, training=self.training),
+                         decoder_mask=x.decoder_mask)
         t = x.decoder_input.shape[1]
         m_mha_x = self.ln_m_mha(x.decoder_input +
                                 self.mask_mha(x.decoder_input, x.decoder_input, x.decoder_input, x.decoder_mask))
         mha_x = self.ln_mha(m_mha_x + self.mha(m_mha_x, x.encoder_output, x.encoder_output,
                                                x.encoder_mask[:, :t, :]))
-        return DecoderInput(encoder_mask=x.encoder_mask, encoder_output=x.encoder_output,
-                            decoder_input=self.ln_ffn(mha_x + self.ffn(mha_x)), decoder_mask=x.decoder_mask)
+        return DecoderInput(encoder_mask=x.encoder_mask,
+                            encoder_output=x.encoder_output,
+                            decoder_input=self.ln_ffn(mha_x + self.ffn(mha_x)),
+                            decoder_mask=x.decoder_mask)
 
 
 def Decoder(num_layers: int, num_heads: int, d_model: int, d_k: int, d_v: int, d_intermediate: int) -> nn.Sequential:
@@ -129,7 +152,7 @@ def Decoder(num_layers: int, num_heads: int, d_model: int, d_k: int, d_v: int, d
 
 
 class Transformer(nn.Module):
-    def __init__(self, num_classes: int, output_embedder: Callable[[Any], Tensor],
+    def __init__(self, num_classes: int, output_embedder: tensor_map,
                  encoder_layers: int = 6, num_heads: int = 8, decoder_layers: int = 6, d_model: int = 300,
                  d_intermediate: int = 128, device: str='cpu') -> None:
         self.device = device
@@ -143,8 +166,8 @@ class Transformer(nn.Module):
         self.predictor = nn.Linear(in_features=d_model, out_features=num_classes).to(self.device)
         self.output_embedder = output_embedder
 
-    def forward(self, encoder_input: Tensor, decoder_input: Tensor, encoder_mask: Tensor,
-                decoder_mask: Tensor) -> Tensor:
+    def forward(self, encoder_input: FloatTensor, decoder_input: FloatTensor, encoder_mask: LongTensor,
+                decoder_mask: LongTensor) -> FloatTensor:
         self.train()
 
         b, n, dk = encoder_input.shape
@@ -155,7 +178,7 @@ class Transformer(nn.Module):
                                                    decoder_mask=decoder_mask))
         return torch.log(sigsoftmax(self.predictor(decoder_output.decoder_input)))
 
-    def infer(self, encoder_input: Tensor, encoder_mask: Tensor, sos_symbol: int) -> Tensor:
+    def infer(self, encoder_input: FloatTensor, encoder_mask: LongTensor, sos_symbol: int) -> FloatTensor:
         self.eval()
 
         b, n, dk = encoder_input.shape
@@ -164,24 +187,118 @@ class Transformer(nn.Module):
         sos_symbols = (torch.ones(b) * sos_symbol).long().to(self.device)
         decoder_output = self.output_embedder(sos_symbols).unsqueeze(1) + pe[:, 0:1, :]
         output_probs = torch.Tensor().to(self.device)
+        inferer = Inferer(self, encoder_output, encoder_mask, b)
+
         for t in range(n):
-            decoder_step = self.decoder(DecoderInput(encoder_output=encoder_output, encoder_mask=encoder_mask,
-                                                     decoder_input=decoder_output,
-                                                     decoder_mask=Mask((b, t + 1, t + 1)).to(self.device)))\
-                .decoder_input
-            prob_t = self.predictor(decoder_step[:, -1])
-            output_probs = torch.cat([output_probs, prob_t.unsqueeze(1)], dim=1)
+            prob_t = inferer(decoder_output, t)
             class_t = prob_t.argmax(dim=-1)
-            emb_t = self.output_embedder(class_t).unsqueeze(1) + pe[:, t+1:t+2, :]
+            emb_t = self.output_embedder(class_t).unsqueeze(1) + pe[:, t + 1:t + 2, :]
             decoder_output = torch.cat([decoder_output, emb_t], dim=1)
+            output_probs = torch.cat([output_probs, prob_t.unsqueeze(1)], dim=1)
         return output_probs
+
+    def infer_next(self, encoder_output: FloatTensor, encoder_mask: LongTensor, decoder_output: FloatTensor,
+                   t: int, b: int) -> FloatTensor:
+        decoder_step = self.decoder(DecoderInput(encoder_output=encoder_output, encoder_mask=encoder_mask,
+                                                 decoder_input=decoder_output,
+                                                 decoder_mask=Mask((b, t + 1, t + 1)).to(self.device))) \
+            .decoder_input
+        prob_t = self.predictor(decoder_step[:, -1])
+        return sigsoftmax(prob_t)  # b, num_classes
+
+    def beam_search(self, encoder_input: FloatTensor, encoder_mask: LongTensor, sos_symbol: int, beam_width: int):
+        self.eval()
+
+        with torch.no_grad():
+            b, n, dk = encoder_input.shape
+            pe = PE(b, n, dk, dk).to(self.device)
+            encoder_output = self.encoder(EncoderInput(encoder_input + pe, encoder_mask)).encoder_input
+            sos_symbols = (torch.ones(b) * sos_symbol).long().to(self.device)
+            decoder_output = self.output_embedder(sos_symbols).unsqueeze(1) + pe[:, 0:1, :]
+            inferer = Inferer(self, encoder_output, encoder_mask, b)
+
+            decoder_outputs = [decoder_output for _ in range(beam_width)]
+
+            outer_beam_paths = [torch.ones(b, 1).long().to(self.device) * sos_symbol
+                                for _ in range(beam_width)]  # list of k [B, t] tensors
+            outer_beam_scores = [torch.ones(b).to(self.device) for _ in range(beam_width)]  # list of k [B] tensors
+            outer_beam_decoder_outputs = [decoder_output for _ in range(beam_width)]  # list of k [B, t, E] tensors
+
+            for t in range(n):
+                # list of k lists of k [B] tensors
+                inner_beam_paths = [[] for _ in range(beam_width)]
+                # list of k lists of k [B] tensors
+                inner_beam_scores = [[] for _ in range(beam_width)]
+                # list of k lists of k [B, t, E] tensors
+                inner_beam_decoder_outputs = [[decoder_outputs[k] for _ in range(beam_width)]
+                                              for k in range(beam_width)]
+
+                # iterate over outer beams
+                for k_outer in range(beam_width):
+                    prob_t = inferer(outer_beam_decoder_outputs[k_outer], t)  # B, num_classes
+                    inner_beam_top_k = argmax_top_k(prob_t, k=beam_width)
+
+                    # generate subsequent beams from current outer beam
+                    for k_inner in range(beam_width):
+                        # evaluate each generated beam
+                        inner_beam_score = outer_beam_scores[k_outer] * inner_beam_top_k[k_inner][0]  # [B] tensor
+                        # store these beams' scores
+                        inner_beam_scores[k_outer].append(inner_beam_score)
+                        # store these beams' paths
+                        inner_beam_paths[k_outer].append(inner_beam_top_k[k_inner][1])
+
+                # collapse the inner beams
+                collapsed_scores = torch.cat([inner_beam_scores[k_outer][k_inner].unsqueeze(1)
+                                              for k_inner in range(beam_width)
+                                              for k_outer in range(beam_width)], dim=1)  # [B, k^2] tensor
+                # select the best k inner beams
+                outer_beam_top_k = argmax_top_k(collapsed_scores, k=beam_width)
+                # assign as new outer beam scores
+                outer_beam_scores = [outer_beam_top_k[k_outer][0] for k_outer in range(beam_width)]
+                # get the indices of the top_k in the k^2 matrix
+                indices = [x[1].tolist() for x in outer_beam_top_k]
+                # map each index to a pair of indices indexing the [k, k] space
+                square_indices = list(map(lambda y: list(map(lambda x:
+                                                             (x//beam_width, x - (x//beam_width) * beam_width),
+                                                             y)),
+                                          indices))  # list of k lists of b (int, int) tuples
+                new_outer_beam_paths = []
+                for new_best in square_indices:
+                    this_beam_path = torch.zeros(b, t+2).long().to(self.device)
+                    for k_outer, k_inner in new_best:
+                        for s in range(b):
+                            # the new path is wherever we came from + wherever we go for this sentence
+                            this_sentence_history = outer_beam_paths[k_outer][s:s+1]
+                            this_sentence_next_step = inner_beam_paths[k_outer][k_inner][s].unsqueeze(0).unsqueeze(1)
+                            this_sentence_path = torch.cat([this_sentence_history, this_sentence_next_step], dim=1)
+                            # the new best-k batch has this path for sentence s
+                            this_beam_path[s, :] = this_sentence_path
+                    new_outer_beam_paths.append(this_beam_path)
+                outer_beam_paths = new_outer_beam_paths
+
+                outer_beam_decoder_outputs = [self.output_embedder(x) for x in outer_beam_paths]
+        return outer_beam_paths, outer_beam_scores
+
+
+class Inferer(object):
+    def __init__(self, transformer: Transformer, encoder_output: FloatTensor, encoder_mask: FloatTensor,
+                 b: int) -> None:
+        self.transformer = transformer
+        self.encoder_output = encoder_output
+        self.encoder_mask = encoder_mask
+        self.b = b
+
+    def __call__(self, decoder_input: FloatTensor, t: int) -> FloatTensor:
+        return self.transformer.infer_next(self.encoder_output, self.encoder_mask, decoder_input, t, self.b)
 
 
 def test(device: str):
-    t = Transformer(5, lambda x: torch.rand(x.shape[0], 300).to(device), device=device)
+    embedder = torch.nn.Embedding(12, 300).to(device)
+    t = Transformer(12, embedder, device=device)
     encoder_input = torch.rand(5, 3, 300).to(device)
     encoder_mask = torch.ones(5, 3, 3).to(device)
     decoder_input = torch.rand(5, 3, 300).to(device)
     decoder_mask = Mask((5, 3, 3)).to(device)
+    paths, scores = t.beam_search(encoder_input, encoder_mask, 0, 3)
     f_v = t.forward(encoder_input, decoder_input, encoder_mask, decoder_mask)
-    i_v = t.infer(encoder_input, encoder_mask, 32)
+    i_v = t.infer(encoder_input, encoder_mask, 0)
