@@ -89,23 +89,25 @@ class FFN(nn.Module):
 
 
 class EncoderLayer(nn.Module):
-    def __init__(self, num_heads: int, d_model: int, d_k: int, d_v: int, d_intermediate: int) -> None:
+    def __init__(self, num_heads: int, d_model: int, d_k: int, d_v: int, d_intermediate: int, dropout: float) -> None:
         super(EncoderLayer, self).__init__()
+        self.dropout = dropout
         self.mha = MultiHeadAttention(num_heads, d_model, d_k, d_v)
         self.ffn = FFN(d_intermediate, d_model)
         self.ln_mha = nn.LayerNorm(normalized_shape=d_model)
         self.ln_ffn = nn.LayerNorm(normalized_shape=d_model)
 
     def forward(self, x: EncoderInput) -> EncoderInput:
-        x = EncoderInput(encoder_input=F.dropout(x.encoder_input, p=0.1, training=self.training),
+        x = EncoderInput(encoder_input=F.dropout(x.encoder_input, p=self.dropout, training=self.training),
                          mask=x.mask)
         mha_x = self.ln_mha(x.encoder_input + self.mha(x.encoder_input, x.encoder_input, x.encoder_input, x.mask))
         return EncoderInput(encoder_input=self.ln_ffn(mha_x + self.ffn(mha_x)),
                             mask=x.mask)
 
 
-def Encoder(num_layers: int, num_heads: int, d_model: int, d_k: int, d_v: int, d_intermediate: int) -> nn.Sequential:
-    layers = [EncoderLayer(num_heads, d_model, d_k, d_v, d_intermediate) for _
+def Encoder(num_layers: int, num_heads: int, d_model: int, d_k: int, d_v: int, d_intermediate: int, dropout: float=0.1)\
+        -> nn.Sequential:
+    layers = [EncoderLayer(num_heads, d_model, d_k, d_v, d_intermediate, dropout) for _
               in range(num_layers)]
     return nn.Sequential(*layers)
 
@@ -126,8 +128,10 @@ def Mask(size: Union[Tuple[int, int], Tuple[int, int, int]]) -> LongTensor:
 
 
 class DecoderLayer(nn.Module):
-    def __init__(self, num_heads: int, d_model: int, d_k: int, d_v: int, d_intermediate: int) -> None:
+    def __init__(self, num_heads: int, d_model: int, d_k: int, d_v: int, d_intermediate: int, dropout: float) \
+            -> None:
         super(DecoderLayer, self).__init__()
+        self.dropout = dropout
         self.mask_mha = MultiHeadAttention(num_heads, d_model, d_k, d_v)
         self.mha = MultiHeadAttention(num_heads, d_model, d_k, d_v)
         self.ffn = FFN(d_intermediate, d_model)
@@ -138,7 +142,7 @@ class DecoderLayer(nn.Module):
     def forward(self, x: DecoderInput) -> DecoderInput:
         x = DecoderInput(encoder_mask=x.encoder_mask,
                          encoder_output=x.encoder_output,
-                         decoder_input=F.dropout(x.decoder_input, 0.1, training=self.training),
+                         decoder_input=F.dropout(x.decoder_input, p=self.dropout, training=self.training),
                          decoder_mask=x.decoder_mask)
         t = x.decoder_input.shape[1]
         m_mha_x = self.ln_m_mha(x.decoder_input +
@@ -151,22 +155,23 @@ class DecoderLayer(nn.Module):
                             decoder_mask=x.decoder_mask)
 
 
-def Decoder(num_layers: int, num_heads: int, d_model: int, d_k: int, d_v: int, d_intermediate: int) -> nn.Sequential:
-    return nn.Sequential(*[DecoderLayer(num_heads, d_model, d_k, d_v, d_intermediate) for _ in range(num_layers)])
+def Decoder(num_layers: int, num_heads: int, d_model: int, d_k: int, d_v: int, d_intermediate: int, dropout: float=0.1)\
+        -> nn.Sequential:
+    return nn.Sequential(*[DecoderLayer(num_heads, d_model, d_k, d_v, d_intermediate, dropout) for _ in range(num_layers)])
 
 
 class Transformer(nn.Module):
     def __init__(self, num_classes: int, output_embedder: tensor_map,
                  encoder_layers: int = 6, num_heads: int = 8, decoder_layers: int = 6, d_model: int = 300,
-                 d_intermediate: int = 128, device: str='cpu') -> None:
+                 d_intermediate: int = 128, dropout: float=0.1, device: str='cpu') -> None:
         self.device = device
         super(Transformer, self).__init__()
         self.encoder = Encoder(num_layers=encoder_layers, num_heads=num_heads, d_model=d_model,
                                d_k=d_model // num_heads, d_v=d_model // num_heads,
-                               d_intermediate=d_intermediate).to(self.device)
+                               d_intermediate=d_intermediate, dropout=dropout).to(self.device)
         self.decoder = Decoder(num_layers=decoder_layers, num_heads=num_heads, d_model=d_model,
                                d_k=d_model // num_heads, d_v=d_model // num_heads,
-                               d_intermediate=d_intermediate).to(self.device)
+                               d_intermediate=d_intermediate, dropout=dropout).to(self.device)
         self.predictor = nn.Linear(in_features=d_model, out_features=num_classes).to(self.device)
         self.output_embedder = output_embedder
 
@@ -227,10 +232,9 @@ class Transformer(nn.Module):
             decoder_output = self.output_embedder(sos_symbols).unsqueeze(1) + pe[:, 0:1, :]
             inferer = Inferer(self, encoder_output, encoder_mask, b)
 
-            outer_beam_paths = [torch.ones(b, 1).long().to(self.device) * sos_symbol
-                                for _ in range(beam_width)]  # List of k [B, t] tensors
-            outer_beam_scores = [torch.ones(b).to(self.device) for _ in range(beam_width)]  # List of k [B] tensors
-            outer_beam_decoder_outputs = [decoder_output for _ in range(beam_width)]  # list of k [B, t, E] tensors
+            outer_beam_paths = torch.ones(beam_width, b, 1, device=self.device, dtype=torch.long)
+            outer_beam_scores = torch.ones(beam_width, b, device=self.device)
+            outer_beam_decoder_outputs = decoder_output.repeat(beam_width, 1, 1, 1)
 
             for t in range(n-1):
                 inner_beam_paths = torch.ones(b, beam_width**2, device=self.device, dtype=torch.long)
@@ -243,35 +247,42 @@ class Transformer(nn.Module):
 
                     # generate subsequent beams from current outer beam
                     for k_inner in range(beam_width):
-                        # todo I am not masking the probabilities
+                        # todo mask - do not reduce the potential of masked sentences
+                        non_masked_sentences = encoder_mask[:, t+1, t+1] == 1
 
                         # evaluate each generated beam
-                        inner_beam_scores[:, forward_index(k_outer, k_inner)] = \
-                            outer_beam_scores[k_outer] * inner_beam_top_k[k_inner][0]
+                        inner_beam_scores[non_masked_sentences, forward_index(k_outer, k_inner)] = \
+                            outer_beam_scores[k_outer][non_masked_sentences] *\
+                            inner_beam_top_k[k_inner][0][non_masked_sentences]
 
                         inner_beam_paths[:, forward_index(k_outer, k_inner)] = inner_beam_top_k[k_inner][1]
 
                 # select the best k inner beams
                 outer_beam_top_k = argmax_top_k(inner_beam_scores, k=beam_width)
                 # assign as new outer beam scores
-                outer_beam_scores = [outer_beam_top_k[k_outer][0] for k_outer in range(beam_width)]
+                outer_beam_scores = torch.cat([outer_beam_top_k[k_outer][0].unsqueeze(0)
+                                               for k_outer in range(beam_width)], dim=0)
 
                 # get the indices of the top_k in the k^2 matrix
                 # and map each index to a pair of indices indexing the [k, k] space
                 square_indices = [list(map(backward_index, x[1].tolist())) for x in outer_beam_top_k]
 
-                new_outer_beam_paths = []
-                for new_best in square_indices:
+                new_outer_beam_paths = torch.zeros(beam_width, b, t+2, device=self.device, dtype=torch.long)
+                for i, new_best in enumerate(square_indices):
                     this_beam_path = torch.zeros(b, t+2, device=self.device, dtype=torch.long)
                     for k_outer, k_inner in new_best:
                         for s in range(b):
                             this_beam_path[s, :t+1] = outer_beam_paths[k_outer][s:s+1]
                             this_beam_path[s, t+1] = inner_beam_paths[s, forward_index(k_outer, k_inner)]
-                    new_outer_beam_paths.append(this_beam_path)
+                    new_outer_beam_paths[i] = this_beam_path
+                    # new_outer_beam_paths.append(this_beam_path)
                 outer_beam_paths = new_outer_beam_paths
 
                 # todo: I am re-embedding everything -> (NlogN)
-                outer_beam_decoder_outputs = [self.output_embedder(x)+pe[:, :t+2] for x in outer_beam_paths]
+                outer_beam_decoder_outputs = torch.cat([(self.output_embedder(x)+pe[:, :t+2]).unsqueeze(0)
+                                                        for x in outer_beam_paths],
+                                                       dim=0)
+
         return outer_beam_paths, outer_beam_scores
 
 
