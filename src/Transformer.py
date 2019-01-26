@@ -20,7 +20,7 @@ def argmax_top_k(x: FloatTensor, k: int) -> List[Tuple[FloatTensor, LongTensor]]
     ret = []
     for repeat in range(k):
         values, indices = torch.max(copy, dim=-1)
-        mask = torch.arange(x.size(-1)).reshape(1, -1).to(x.device) == indices.unsqueeze(-1)
+        mask = torch.arange(x.size(-1), device=x.device).reshape(1, -1) == indices.unsqueeze(-1)
         copy[mask] = -float('inf')
         ret.append((values, indices))
     return ret
@@ -33,12 +33,16 @@ def sigsoftmax(x: FloatTensor) -> FloatTensor:
     return sigx/norm
 
 
+def fuzz(y: LongTensor, num_classes: int) -> FloatTensor:
+    return NotImplemented
+
+
 def ScaledDotProduct(queries: FloatTensor, keys: FloatTensor, values: FloatTensor,
                      mask: Optional[LongTensor] = None) -> FloatTensor:
     b, _, dk = keys.shape
     weights = torch.bmm(queries, keys.transpose(2, 1)) / math.sqrt(dk)  # [B, M, N]
     if mask is not None:
-        weights = weights.masked_fill(mask == 0, value=-float('inf'))
+        weights = weights.masked_fill(mask == 0, value=-1e10)
     weights = F.softmax(weights, dim=-1)  # [B, M, N]
     return torch.bmm(weights, values)
 
@@ -106,10 +110,10 @@ def Encoder(num_layers: int, num_heads: int, d_model: int, d_k: int, d_v: int, d
     return nn.Sequential(*layers)
 
 
-def PE(b: int, n: int, d_inp: int, d_model: int, freq: int = 10000) -> FloatTensor:
-    pe = torch.zeros(n, d_model).float()
-    position = torch.arange(0, n).unsqueeze(1).float()
-    div_term = torch.exp(torch.arange(0, d_inp, 2).float() *
+def PE(b: int, n: int, d_inp: int, d_model: int, freq: int = 10000, device: str='cpu') -> FloatTensor:
+    pe = torch.zeros(n, d_model, device=device)
+    position = torch.arange(0, n, device=device, dtype=torch.float).unsqueeze(1)
+    div_term = torch.exp(torch.arange(0, d_inp, 2, device=device, dtype=torch.float) *
                          - (math.log(freq) / d_model))
     pe[:, 0::2] = torch.sin(position * div_term)
     pe[:, 1::2] = torch.cos(position * div_term)
@@ -171,7 +175,7 @@ class Transformer(nn.Module):
         self.train()
 
         b, n, dk = encoder_input.shape
-        pe = PE(b, n, dk, dk).to(self.device)
+        pe = PE(b, n, dk, dk, device=self.device)
         encoder_output = self.encoder(EncoderInput(encoder_input + pe, encoder_mask))
         decoder_output = self.decoder(DecoderInput(encoder_output=encoder_output.encoder_input,
                                                    encoder_mask=encoder_mask, decoder_input=decoder_input + pe,
@@ -182,7 +186,7 @@ class Transformer(nn.Module):
         self.eval()
 
         b, n, dk = encoder_input.shape
-        pe = PE(b, n, dk, dk).to(self.device)
+        pe = PE(b, n, dk, dk, device=self.device)
         encoder_output = self.encoder(EncoderInput(encoder_input + pe, encoder_mask)).encoder_input
         sos_symbols = (torch.ones(b) * sos_symbol).long().to(self.device)
         decoder_output = self.output_embedder(sos_symbols).unsqueeze(1) + pe[:, 0:1, :]
@@ -209,29 +213,28 @@ class Transformer(nn.Module):
     def beam_search(self, encoder_input: FloatTensor, encoder_mask: LongTensor, sos_symbol: int, beam_width: int):
         self.eval()
 
+        def forward_index(dim1: int, dim2: int) -> int:
+            return dim1 * beam_width + dim2
+
+        def backward_index(idx: int) -> Tuple[int, int]:
+            return idx // beam_width, idx - (idx // beam_width) * beam_width
+
         with torch.no_grad():
             b, n, dk = encoder_input.shape
-            pe = PE(b, n, dk, dk).to(self.device)
+            pe = PE(b, n, dk, dk, device=self.device)
             encoder_output = self.encoder(EncoderInput(encoder_input + pe, encoder_mask)).encoder_input
-            sos_symbols = (torch.ones(b) * sos_symbol).long().to(self.device)
+            sos_symbols = (torch.ones(b, device=self.device) * sos_symbol).long()
             decoder_output = self.output_embedder(sos_symbols).unsqueeze(1) + pe[:, 0:1, :]
             inferer = Inferer(self, encoder_output, encoder_mask, b)
 
-            decoder_outputs = [decoder_output for _ in range(beam_width)]
-
             outer_beam_paths = [torch.ones(b, 1).long().to(self.device) * sos_symbol
-                                for _ in range(beam_width)]  # list of k [B, t] tensors
-            outer_beam_scores = [torch.ones(b).to(self.device) for _ in range(beam_width)]  # list of k [B] tensors
+                                for _ in range(beam_width)]  # List of k [B, t] tensors
+            outer_beam_scores = [torch.ones(b).to(self.device) for _ in range(beam_width)]  # List of k [B] tensors
             outer_beam_decoder_outputs = [decoder_output for _ in range(beam_width)]  # list of k [B, t, E] tensors
 
-            for t in range(n):
-                # list of k lists of k [B] tensors
-                inner_beam_paths = [[] for _ in range(beam_width)]
-                # list of k lists of k [B] tensors
-                inner_beam_scores = [[] for _ in range(beam_width)]
-                # list of k lists of k [B, t, E] tensors
-                inner_beam_decoder_outputs = [[decoder_outputs[k] for _ in range(beam_width)]
-                                              for k in range(beam_width)]
+            for t in range(n-1):
+                inner_beam_paths = torch.ones(b, beam_width**2, device=self.device, dtype=torch.long)
+                inner_beam_scores = torch.zeros(b, beam_width**2, device=self.device)
 
                 # iterate over outer beams
                 for k_outer in range(beam_width):
@@ -240,43 +243,35 @@ class Transformer(nn.Module):
 
                     # generate subsequent beams from current outer beam
                     for k_inner in range(beam_width):
-                        # evaluate each generated beam
-                        inner_beam_score = outer_beam_scores[k_outer] * inner_beam_top_k[k_inner][0]  # [B] tensor
-                        # store these beams' scores
-                        inner_beam_scores[k_outer].append(inner_beam_score)
-                        # store these beams' paths
-                        inner_beam_paths[k_outer].append(inner_beam_top_k[k_inner][1])
+                        # todo I am not masking the probabilities
 
-                # collapse the inner beams
-                collapsed_scores = torch.cat([inner_beam_scores[k_outer][k_inner].unsqueeze(1)
-                                              for k_inner in range(beam_width)
-                                              for k_outer in range(beam_width)], dim=1)  # [B, k^2] tensor
+                        # evaluate each generated beam
+                        inner_beam_scores[:, forward_index(k_outer, k_inner)] = \
+                            outer_beam_scores[k_outer] * inner_beam_top_k[k_inner][0]
+
+                        inner_beam_paths[:, forward_index(k_outer, k_inner)] = inner_beam_top_k[k_inner][1]
+
                 # select the best k inner beams
-                outer_beam_top_k = argmax_top_k(collapsed_scores, k=beam_width)
+                outer_beam_top_k = argmax_top_k(inner_beam_scores, k=beam_width)
                 # assign as new outer beam scores
                 outer_beam_scores = [outer_beam_top_k[k_outer][0] for k_outer in range(beam_width)]
+
                 # get the indices of the top_k in the k^2 matrix
-                indices = [x[1].tolist() for x in outer_beam_top_k]
-                # map each index to a pair of indices indexing the [k, k] space
-                square_indices = list(map(lambda y: list(map(lambda x:
-                                                             (x//beam_width, x - (x//beam_width) * beam_width),
-                                                             y)),
-                                          indices))  # list of k lists of b (int, int) tuples
+                # and map each index to a pair of indices indexing the [k, k] space
+                square_indices = [list(map(backward_index, x[1].tolist())) for x in outer_beam_top_k]
+
                 new_outer_beam_paths = []
                 for new_best in square_indices:
-                    this_beam_path = torch.zeros(b, t+2).long().to(self.device)
+                    this_beam_path = torch.zeros(b, t+2, device=self.device, dtype=torch.long)
                     for k_outer, k_inner in new_best:
                         for s in range(b):
-                            # the new path is wherever we came from + wherever we go for this sentence
-                            this_sentence_history = outer_beam_paths[k_outer][s:s+1]
-                            this_sentence_next_step = inner_beam_paths[k_outer][k_inner][s].unsqueeze(0).unsqueeze(1)
-                            this_sentence_path = torch.cat([this_sentence_history, this_sentence_next_step], dim=1)
-                            # the new best-k batch has this path for sentence s
-                            this_beam_path[s, :] = this_sentence_path
+                            this_beam_path[s, :t+1] = outer_beam_paths[k_outer][s:s+1]
+                            this_beam_path[s, t+1] = inner_beam_paths[s, forward_index(k_outer, k_inner)]
                     new_outer_beam_paths.append(this_beam_path)
                 outer_beam_paths = new_outer_beam_paths
 
-                outer_beam_decoder_outputs = [self.output_embedder(x) for x in outer_beam_paths]
+                # todo: I am re-embedding everything -> (NlogN)
+                outer_beam_decoder_outputs = [self.output_embedder(x)+pe[:, :t+2] for x in outer_beam_paths]
         return outer_beam_paths, outer_beam_scores
 
 
