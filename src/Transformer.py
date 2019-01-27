@@ -1,4 +1,4 @@
-from typing import NamedTuple, Optional, Callable, Iterable, Any, Union, Tuple, List
+from typing import NamedTuple, Optional, Callable, Iterable, Any, Union, Tuple, List, Sequence
 from torch.nn import functional as F
 from torch import nn
 import torch
@@ -398,6 +398,34 @@ class FuzzyLoss(object):
         mask = y == 0
         y_float[mask.unsqueeze(1).repeat(1, self.nc, 1)] = 0
         return self.loss_fn(x, y_float)
+
+
+class CustomLRScheduler(object):
+    def __init__(self, optimizer: torch.optim.Optimizer, update_fn: Callable[[int, Any], float],
+                 **kwargs: Any) -> None:
+        self.opt = optimizer
+        self._step = 0
+        self.update_fn = update_fn
+        self.lr = None
+        self.__dict__.update(kwargs)
+
+    def step(self) -> None:
+        self._step += 1
+        self.lr = self.update(step=self._step, **{k: v for k, v in self.__dict__.items() if k not in
+                             ('_step', 'opt', 'update_fn', 'lr')})
+        for p in self.opt.param_groups:
+            p['lr'] = self.lr
+        self.opt.step()
+
+    def zero_grad(self) -> None:
+        self.opt.zero_grad()
+
+    def update(self, step: int, **kwargs) -> float:
+        return self.update_fn(step, **kwargs)
+
+
+def noam_scheme(_step: int, d_model: int, warmup_steps: int) -> float:
+    return d_model**-0.5 * min(_step**-0.5, _step*warmup_steps**-1.5)
 
 
 def test(device: str):
