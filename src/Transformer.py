@@ -347,13 +347,13 @@ class Transformer(nn.Module):
                 # tensor of shape K, B
                 outer_beam_scores = torch.cat([x[0].unsqueeze(0) for x in outer_beam_top_k], dim=0)
 
-                square_indices = [list(map(backward_index, x[1].tolist())) for x in outer_beam_top_k]
-
                 # tensor of shape K, B, t+2
                 new_outer_beam_paths = torch.zeros(beam_width, b, t + 2, device=self.device, dtype=torch.long)
                 new_outer_beam_decoder_outputs = torch.zeros(beam_width, b, t+2, dk,
                                                              device=self.device, dtype=torch.float)
                 outer_beam_decoder_outputs = outer_beam_decoder_outputs.view(beam_width, b, t+1, dk)
+
+                square_indices = [list(map(backward_index, x[1].tolist())) for x in outer_beam_top_k]
 
                 # update the paths and embeddings
                 for i, new_best in enumerate(square_indices):
@@ -361,11 +361,11 @@ class Transformer(nn.Module):
                         for s in range(b):
                             new_outer_beam_paths[i, s, :t+1] = outer_beam_paths[k_outer][s:s + 1]
                             new_outer_beam_paths[i, s, t+1:t+2] = per_beam_paths[k_outer, k_inner, s]
-                            # new_outer_beam_decoder_outputs[i, s, :t + 1] = outer_beam_decoder_outputs[i, s]
+                            new_outer_beam_decoder_outputs[i, s, :t + 1] = outer_beam_decoder_outputs[i, s]
 
-                # new_outer_beam_decoder_outputs[:, :, t+1] = \
-                #     self.output_embedder(new_outer_beam_paths[:, :, t+1]) + pe[:, t+1].repeat(beam_width, 1, 1)
-                new_outer_beam_decoder_outputs = self.output_embedder(new_outer_beam_paths) + pe[:, :t+2]
+                new_outer_beam_decoder_outputs[:, :, t+1] = \
+                    self.output_embedder(new_outer_beam_paths[:, :, t+1]) + pe[:, t+1].repeat(beam_width, 1, 1)
+                # new_outer_beam_decoder_outputs = self.output_embedder(new_outer_beam_paths) + pe[:, :t+2]
 
                 outer_beam_paths = new_outer_beam_paths
                 outer_beam_decoder_outputs = new_outer_beam_decoder_outputs.view(beam_width * b, t+2, dk)
@@ -382,6 +382,22 @@ class Inferer(object):
 
     def __call__(self, decoder_input: FloatTensor, t: int) -> FloatTensor:
         return self.transformer.infer_next(self.encoder_output, self.encoder_mask, decoder_input, t, self.b)
+
+
+class FuzzyLoss(object):
+    def __init__(self, loss_fn: Callable[[FloatTensor, FloatTensor], FloatTensor], num_classes: int,
+                 mass_redistribution: float) -> None:
+        self.loss_fn = loss_fn
+        self.nc = num_classes
+        self.mass_redistribution = mass_redistribution
+
+    def __call__(self, x: FloatTensor, y: LongTensor) -> FloatTensor:
+        y_float = torch.zeros(x.shape[0], self.nc, x.shape[2], device=x.device, dtype=torch.float)
+        y_float.fill_(self.mass_redistribution / (self.nc - 1))
+        y_float.scatter_(1, y.unsqueeze(1), 1 - self.mass_redistribution)
+        mask = y == 0
+        y_float[mask.unsqueeze(1).repeat(1, self.nc, 1)] = 0
+        return self.loss_fn(x, y_float)
 
 
 def test(device: str):
