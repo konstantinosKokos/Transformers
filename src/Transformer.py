@@ -69,7 +69,7 @@ class DecoderLayer(nn.Module):
         m_mha_x += x.decoder_input
         m_mha_x = self.ln_m_mha(m_mha_x)
         mha_x = self.mha(m_mha_x, x.encoder_output, x.encoder_output, x.encoder_mask[:, :t, :])
-        mha_x = F.dropout(m_mha_x, p=self.dropout_rate)
+        mha_x = F.dropout(mha_x, p=self.dropout_rate)
         mha_x += m_mha_x
         mha_x = self.ln_mha(mha_x)
         ffn_x = self.ffn(mha_x)
