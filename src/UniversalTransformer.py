@@ -7,84 +7,43 @@ import numpy as np
 
 try:
     from src.utils import *
+    from src.Transformer import EncoderLayer, DecoderLayer
 except ImportError:
     from Transformer.src.utils import *
-
-
-class RecurrentEncoderLayer(nn.Module):
-    def __init__(self, num_heads: int, d_model: int, d_k: int, d_v: int, dropout: float) -> None:
-        super(RecurrentEncoderLayer, self).__init__()
-        self.dropout_rate = dropout
-        self.mha = MultiHeadAttention(num_heads, d_model, d_k, d_v)
-        self.ln_mha = nn.LayerNorm(normalized_shape=d_model)
-        self.ln_ffn = nn.LayerNorm(normalized_shape=d_model)
-
-    def forward(self, x: EncoderInput, ffn: tensor_map) -> EncoderInput:
-        mha_x = F.dropout(
-            self.mha(x.encoder_input, x.encoder_input, x.encoder_input, x.mask), p=self.dropout_rate) + x.encoder_input
-        mha_x = self.ln_mha(mha_x)
-        ffn_x = self.ln_ffn(F.dropout(ffn(mha_x), p=self.dropout_rate) + mha_x)
-        return EncoderInput(encoder_input=ffn_x, mask=x.mask)
+    from Transformer.src.Transformer import EncoderLayer, DecoderLayer
 
 
 class RecurrentEncoder(nn.Module):
-    def __init__(self, num_layers: int, num_heads: int, d_model: int, d_k: int, d_v: int, d_intermediate: int,
+    def __init__(self, num_steps: int, num_heads: int, d_model: int, d_k: int, d_v: int, d_intermediate: int,
                  dropout=0.1) -> None:
         super(RecurrentEncoder, self).__init__()
-        self.shared_ffn = FFN(d_intermediate, d_model)
-        self.layers = nn.ModuleList([RecurrentEncoderLayer(num_heads, d_model, d_k, d_v, dropout)
-                                     for _ in range(num_layers)])
+        self.layer = EncoderLayer(num_heads, d_model, d_k, d_v, d_intermediate, dropout)
+        self.num_repeats = num_steps
 
     def forward(self, x: EncoderInput) -> EncoderInput:
         b, n, dk = x.encoder_input.shape
-        for i, layer in enumerate(self.layers):
-            x = layer(EncoderInput(encoder_input=x.encoder_input + PT(b, i, n, dk, dk, device=x.encoder_input.device),
-                                   mask=x.mask), self.shared_ffn)
+        for i in range(self.num_repeats):
+            x = self.layer(EncoderInput(encoder_input=x.encoder_input + PT(b, i, n, dk, dk,
+                                                                           device=x.encoder_input.device),
+                                        mask=x.mask))
         return x
 
 
-class RecurrentDecoderLayer(nn.Module):
-    def __init__(self, num_heads: int, d_model: int, d_k: int, d_v: int, dropout: float) -> None:
-        super(RecurrentDecoderLayer, self).__init__()
-        self.dropout_rate = dropout
-        self.mask_mha = MultiHeadAttention(num_heads, d_model, d_k, d_v)
-        self.mha = MultiHeadAttention(num_heads, d_model, d_k, d_v)
-        self.ln_m_mha = nn.LayerNorm(normalized_shape=d_model)
-        self.ln_mha = nn.LayerNorm(normalized_shape=d_model)
-        self.ln_ffn = nn.LayerNorm(normalized_shape=d_model)
-
-    def forward(self, x: DecoderInput, ffn: tensor_map) -> DecoderInput:
-        t = x.decoder_input.shape[1]
-        m_mha_x = self.mask_mha(x.decoder_input, x.decoder_input, x.decoder_input, x.decoder_mask)
-        m_mha_x = F.dropout(m_mha_x, p=self.dropout_rate) + x.decoder_input
-        m_mha_x = self.ln_m_mha(m_mha_x)
-        mha_x = self.mha(m_mha_x, x.encoder_output, x.encoder_output, x.encoder_mask[:, :t, :])
-        mha_x = F.dropout(mha_x, p=self.dropout_rate) + m_mha_x
-        mha_x = self.ln_mha(mha_x)
-        ffn_x = ffn(mha_x)
-        ffn_x = F.dropout(ffn_x, p=self.dropout_rate) + mha_x
-        ffn_x = self.ln_ffn(ffn_x)
-        return DecoderInput(encoder_output=x.encoder_output,
-                            decoder_input=ffn_x,
-                            decoder_mask=x.decoder_mask,
-                            encoder_mask=x.encoder_mask)
-
-
 class RecurrentDecoder(nn.Module):
-    def __init__(self, num_layers: int, num_heads: int, d_model: int, d_k: int, d_v: int, d_intermediate: int,
+    def __init__(self, num_steps: int, num_heads: int, d_model: int, d_k: int, d_v: int, d_intermediate: int,
                  dropout: float=0.1) -> None:
         super(RecurrentDecoder, self).__init__()
-        self.shared_ffn = FFN(d_intermediate, d_model)
-        self.layers = nn.ModuleList([RecurrentDecoderLayer(num_heads, d_model, d_k, d_v, dropout)
-                                    for _ in range(num_layers)])
+        self.layer = DecoderLayer(num_heads, d_model, d_k, d_v, d_intermediate, dropout)
+        self.num_repeats = num_steps
 
     def forward(self, x: DecoderInput) -> DecoderInput:
         b, n, dk = x.decoder_input.shape
-        for i, layer in enumerate(self.layers):
-            x = layer(DecoderInput(decoder_input=x.decoder_input + PT(b, i, n, dk, dk, device=x.decoder_input.device),
-                                   encoder_output=x.encoder_output,
-                                   decoder_mask=x.decoder_mask,
-                                   encoder_mask=x.encoder_mask), self.shared_ffn)
+        for i in range(self.num_repeats):
+            x = self.layer(DecoderInput(decoder_input=x.decoder_input + PT(b, i, n, dk, dk,
+                                                                           device=x.decoder_input.device),
+                                        encoder_output=x.encoder_output,
+                                        decoder_mask=x.decoder_mask,
+                                        encoder_mask=x.encoder_mask))
         return x
 
 
@@ -94,10 +53,10 @@ class UniversalTransformer(nn.Module):
                  d_intermediate: int = 1024, dropout: float=0.1, device: str='cpu') -> None:
         self.device = device
         super(UniversalTransformer, self).__init__()
-        self.encoder = RecurrentEncoder(num_layers=encoder_layers, num_heads=num_heads, d_model=d_model,
+        self.encoder = RecurrentEncoder(num_steps=encoder_layers, num_heads=num_heads, d_model=d_model,
                                         d_k=d_model // num_heads, d_v=d_model // num_heads,
                                         dropout=dropout, d_intermediate=d_intermediate).to(self.device)
-        self.decoder = RecurrentDecoder(num_layers=decoder_layers, num_heads=num_heads, d_model=d_model,
+        self.decoder = RecurrentDecoder(num_steps=decoder_layers, num_heads=num_heads, d_model=d_model,
                                         d_k=d_model // num_heads, d_v=d_model // num_heads,
                                         dropout=dropout, d_intermediate=d_intermediate).to(self.device)
         self.predictor = nn.Linear(in_features=d_model, out_features=num_classes).to(self.device)
@@ -114,6 +73,37 @@ class UniversalTransformer(nn.Module):
                                                    decoder_input=decoder_input,
                                                    decoder_mask=decoder_mask))
         return torch.log(sigsoftmax(self.predictor(decoder_output.decoder_input)))
+
+    def infer(self, encoder_input: FloatTensor, encoder_mask: LongTensor, sos_symbol: int) -> FloatTensor:
+        self.eval()
+
+        b, n, dk = encoder_input.shape
+        pe = PT(b, 0, n, dk, dk, device=self.device)
+        encoder_output = self.encoder(EncoderInput(encoder_input + pe, encoder_mask)).encoder_input
+        sos_symbols = (torch.ones(b, device=self.device) * sos_symbol).long()
+        decoder_output = self.output_embedder(sos_symbols).unsqueeze(1) + pe[:, 0:1, :]
+        output_probs = torch.Tensor().to(self.device)
+        inferer = Inferer(self, encoder_output, encoder_mask, b)
+
+        for t in range(n):
+            prob_t = inferer(decoder_output, t)
+            class_t = prob_t.argmax(dim=-1)
+            emb_t = self.output_embedder(class_t).unsqueeze(1) + pe[:, t + 1:t + 2, :]
+            decoder_output = torch.cat([decoder_output, emb_t], dim=1)
+            output_probs = torch.cat([output_probs, prob_t.unsqueeze(1)], dim=1)
+        return output_probs
+
+
+class Inferer(object):
+    def __init__(self, transformer: UniversalTransformer, encoder_output: FloatTensor, encoder_mask: FloatTensor,
+                 b: int) -> None:
+        self.transformer = transformer
+        self.encoder_output = encoder_output
+        self.encoder_mask = encoder_mask
+        self.b = b
+
+    def __call__(self, decoder_input: FloatTensor, t: int) -> FloatTensor:
+        return self.transformer.infer_next(self.encoder_output, self.encoder_mask, decoder_input, t, self.b)
 
 
 def test(device: str):
