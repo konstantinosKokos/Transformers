@@ -21,11 +21,10 @@ class EncoderLayer(nn.Module):
         self.ln_ffn = nn.LayerNorm(normalized_shape=d_model)
 
     def forward(self, x: EncoderInput) -> EncoderInput:
-        mha_x = F.dropout(
-            self.mha(x.encoder_input, x.encoder_input, x.encoder_input, x.mask), p=self.dropout_rate) + x.encoder_input
-        mha_x = self.ln_mha(mha_x)
-        ffn_x = F.dropout(self.ffn(mha_x), p=self.dropout_rate) + mha_x
-        ffn_x = self.ln_ffn(ffn_x)
+        mha_x = self.mha(x.encoder_input, x.encoder_input, x.encoder_input, x.mask)
+        mha_x = self.ln_mha(F.dropout(mha_x, p=self.dropout_rate) + x.encoder_input)
+        ffn_x = self.ffn(mha_x)
+        ffn_x = self.ln_ffn(F.dropout(ffn_x, p=self.dropout_rate) + mha_x)
         return EncoderInput(encoder_input=ffn_x, mask=x.mask)
 
 
@@ -51,14 +50,11 @@ class DecoderLayer(nn.Module):
     def forward(self, x: DecoderInput) -> DecoderInput:
         t = x.decoder_input.shape[1]
         m_mha_x = self.mask_mha(x.decoder_input, x.decoder_input, x.decoder_input, x.decoder_mask)
-        m_mha_x = F.dropout(m_mha_x, p=self.dropout_rate) + x.decoder_input
-        m_mha_x = self.ln_m_mha(m_mha_x)
+        m_mha_x = self.ln_m_mha(F.dropout(m_mha_x, p=self.dropout_rate) + x.decoder_input)
         mha_x = self.mha(m_mha_x, x.encoder_output, x.encoder_output, x.encoder_mask[:, :t, :])
-        mha_x = F.dropout(mha_x, p=self.dropout_rate) + m_mha_x
-        mha_x = self.ln_mha(mha_x)
+        mha_x = self.ln_mha(F.dropout(mha_x, p=self.dropout_rate) + m_mha_x)
         ffn_x = self.ffn(mha_x)
-        ffn_x = F.dropout(ffn_x, p=self.dropout_rate) + mha_x
-        ffn_x = self.ln_ffn(ffn_x)
+        ffn_x = self.ln_ffn(F.dropout(ffn_x, p=self.dropout_rate) + mha_x)
         return DecoderInput(encoder_output=x.encoder_output,
                             decoder_input=ffn_x,
                             decoder_mask=x.decoder_mask,
