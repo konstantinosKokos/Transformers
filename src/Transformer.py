@@ -10,9 +10,13 @@ LongTensor = Union[torch.cuda.LongTensor, torch.LongTensor]
 Tensor = Union[FloatTensor, LongTensor]
 tensor_map = Callable[[Any], Tensor]
 tensor_maps = Iterable[tensor_map]
-EncoderInput = NamedTuple('EncoderInput', [('encoder_input', FloatTensor), ('mask', Optional[LongTensor])])
-DecoderInput = NamedTuple('DecoderInput', [('encoder_output', FloatTensor), ('decoder_input', FloatTensor),
-                                           ('encoder_mask', Optional[LongTensor]), ('decoder_mask', LongTensor)])
+
+EncoderInput = NamedTuple('EncoderInput', [('encoder_input', FloatTensor),
+                                           ('mask', Optional[LongTensor])])
+DecoderInput = NamedTuple('DecoderInput', [('encoder_output', FloatTensor),
+                                           ('decoder_input', FloatTensor),
+                                           ('encoder_mask', Optional[LongTensor]),
+                                           ('decoder_mask', LongTensor)])
 
 
 def argmax_top_k(x: FloatTensor, k: int) -> List[Tuple[FloatTensor, LongTensor]]:
@@ -31,10 +35,6 @@ def sigsoftmax(x: FloatTensor) -> FloatTensor:
     rank = len(sigx.shape)
     norm = torch.sum(sigx, dim=-1).unsqueeze(-1).repeat([1 for _ in range(rank-1)] + [sigx.shape[-1]])
     return sigx/norm
-
-
-def fuzz(y: LongTensor, num_classes: int) -> FloatTensor:
-    return NotImplemented
 
 
 def ScaledDotProduct(queries: FloatTensor, keys: FloatTensor, values: FloatTensor,
@@ -91,18 +91,20 @@ class FFN(nn.Module):
 class EncoderLayer(nn.Module):
     def __init__(self, num_heads: int, d_model: int, d_k: int, d_v: int, d_intermediate: int, dropout: float) -> None:
         super(EncoderLayer, self).__init__()
-        self.dropout = dropout
+        self.dropout_rate = dropout
         self.mha = MultiHeadAttention(num_heads, d_model, d_k, d_v)
         self.ffn = FFN(d_intermediate, d_model)
         self.ln_mha = nn.LayerNorm(normalized_shape=d_model)
         self.ln_ffn = nn.LayerNorm(normalized_shape=d_model)
 
     def forward(self, x: EncoderInput) -> EncoderInput:
-        x = EncoderInput(encoder_input=F.dropout(x.encoder_input, p=self.dropout, training=self.training),
-                         mask=x.mask)
-        mha_x = self.ln_mha(x.encoder_input + self.mha(x.encoder_input, x.encoder_input, x.encoder_input, x.mask))
-        return EncoderInput(encoder_input=self.ln_ffn(mha_x + self.ffn(mha_x)),
-                            mask=x.mask)
+        mha_x = F.dropout(self.mha(x.encoder_input, x.encoder_input, x.encoder_input, x.mask), p=self.dropout_rate)
+        mha_x += x.encoder_input
+        mha_x = self.ln_mha(mha_x)
+        ffn_x = F.dropout(self.ffn(mha_x), p=self.dropout_rate)
+        ffn_x += mha_x
+        ffn_x += self.ln_ffn(ffn_x)
+        return EncoderInput(encoder_input=ffn_x, mask=x.mask)
 
 
 def Encoder(num_layers: int, num_heads: int, d_model: int, d_k: int, d_v: int, d_intermediate: int, dropout: float=0.1)\
@@ -131,7 +133,7 @@ class DecoderLayer(nn.Module):
     def __init__(self, num_heads: int, d_model: int, d_k: int, d_v: int, d_intermediate: int, dropout: float) \
             -> None:
         super(DecoderLayer, self).__init__()
-        self.dropout = dropout
+        self.dropout_rate = dropout
         self.mask_mha = MultiHeadAttention(num_heads, d_model, d_k, d_v)
         self.mha = MultiHeadAttention(num_heads, d_model, d_k, d_v)
         self.ffn = FFN(d_intermediate, d_model)
@@ -140,19 +142,23 @@ class DecoderLayer(nn.Module):
         self.ln_ffn = nn.LayerNorm(normalized_shape=d_model)
 
     def forward(self, x: DecoderInput) -> DecoderInput:
-        x = DecoderInput(encoder_mask=x.encoder_mask,
-                         encoder_output=x.encoder_output,
-                         decoder_input=F.dropout(x.decoder_input, p=self.dropout, training=self.training),
-                         decoder_mask=x.decoder_mask)
         t = x.decoder_input.shape[1]
-        m_mha_x = self.ln_m_mha(x.decoder_input +
-                                self.mask_mha(x.decoder_input, x.decoder_input, x.decoder_input, x.decoder_mask))
-        mha_x = self.ln_mha(m_mha_x + self.mha(m_mha_x, x.encoder_output, x.encoder_output,
-                                               x.encoder_mask[:, :t, :]))
-        return DecoderInput(encoder_mask=x.encoder_mask,
-                            encoder_output=x.encoder_output,
-                            decoder_input=self.ln_ffn(mha_x + self.ffn(mha_x)),
-                            decoder_mask=x.decoder_mask)
+        m_mha_x = self.mask_mha(x.decoder_input, x.decoder_input, x.decoder_input, x.decoder_mask)
+        m_mha_x = F.dropout(m_mha_x, p=self.dropout_rate)
+        m_mha_x += x.decoder_input
+        m_mha_x = self.ln_m_mha(m_mha_x)
+        mha_x = self.mha(m_mha_x, x.encoder_output, x.encoder_output, x.encoder_mask[:, :t, :])
+        mha_x = F.dropout(m_mha_x, p=self.dropout_rate)
+        mha_x += m_mha_x
+        mha_x = self.ln_mha(mha_x)
+        ffn_x = self.ffn(mha_x)
+        ffn_x = F.dropout(ffn_x, p=self.dropout_rate)
+        ffn_x += mha_x
+        ffn_x = self.ln_ffn(ffn_x)
+        return DecoderInput(encoder_output=x.encoder_output,
+                            decoder_input=ffn_x,
+                            decoder_mask=x.decoder_mask,
+                            encoder_mask=x.encoder_mask)
 
 
 def Decoder(num_layers: int, num_heads: int, d_model: int, d_k: int, d_v: int, d_intermediate: int, dropout: float=0.1)\
@@ -428,6 +434,20 @@ def noam_scheme(_step: int, d_model: int, warmup_steps: int) -> float:
     return d_model**-0.5 * min(_step**-0.5, _step*warmup_steps**-1.5)
 
 
+def count_parameters(model):
+    import numpy
+    total_param = 0
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            num_param = numpy.prod(param.size())
+            if param.dim() > 1:
+                print(name, ':', 'x'.join(str(x) for x in list(param.size())), '=', num_param)
+            else:
+                print(name, ':', num_param)
+            total_param += num_param
+    return total_param
+
+
 def test(device: str):
     sl = 25
     nc = 1000
@@ -438,11 +458,11 @@ def test(device: str):
     encoder_mask = torch.ones(128, sl, sl).to(device)
     decoder_input = torch.rand(128, sl, 300).to(device)
     decoder_mask = Mask((128, sl, sl)).to(device)
-    paths, scores = t.vectorized_beam_search(encoder_input, encoder_mask, 0, 3)
-    p2, s2 = t.beam_search(encoder_input, encoder_mask, 0, 3)
-    print((paths - p2).sum())
-    print((scores - s2).sum())
-    import pdb
-    pdb.set_trace()
+    # paths, scores = t.vectorized_beam_search(encoder_input, encoder_mask, 0, 3)
+    # p2, s2 = t.beam_search(encoder_input, encoder_mask, 0, 3)
+    # print((paths - p2).sum())
+    # print((scores - s2).sum())
+    # import pdb
+    # pdb.set_trace()
     f_v = t.forward(encoder_input, decoder_input, encoder_mask, decoder_mask)
     i_v = t.infer(encoder_input, encoder_mask, 0)
