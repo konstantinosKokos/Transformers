@@ -7,21 +7,8 @@ import numpy as np
 
 try:
     from src.utils import *
-except ImportError;
+except ImportError:
     from Transformer.src.utils import *
-
-FloatTensor = Union[torch.cuda.FloatTensor, torch.FloatTensor]
-LongTensor = Union[torch.cuda.LongTensor, torch.LongTensor]
-Tensor = Union[FloatTensor, LongTensor]
-tensor_map = Callable[[Any], Tensor]
-tensor_maps = Iterable[tensor_map]
-
-EncoderInput = NamedTuple('EncoderInput', [('encoder_input', FloatTensor),
-                                           ('mask', Optional[LongTensor])])
-DecoderInput = NamedTuple('DecoderInput', [('encoder_output', FloatTensor),
-                                           ('decoder_input', FloatTensor),
-                                           ('encoder_mask', Optional[LongTensor]),
-                                           ('decoder_mask', LongTensor)])
 
 
 class EncoderLayer(nn.Module):
@@ -34,12 +21,11 @@ class EncoderLayer(nn.Module):
         self.ln_ffn = nn.LayerNorm(normalized_shape=d_model)
 
     def forward(self, x: EncoderInput) -> EncoderInput:
-        mha_x = F.dropout(self.mha(x.encoder_input, x.encoder_input, x.encoder_input, x.mask), p=self.dropout_rate)
-        mha_x += x.encoder_input
+        mha_x = F.dropout(
+            self.mha(x.encoder_input, x.encoder_input, x.encoder_input, x.mask), p=self.dropout_rate) + x.encoder_input
         mha_x = self.ln_mha(mha_x)
-        ffn_x = F.dropout(self.ffn(mha_x), p=self.dropout_rate)
-        ffn_x += mha_x
-        ffn_x += self.ln_ffn(ffn_x)
+        ffn_x = F.dropout(self.ffn(mha_x), p=self.dropout_rate) + mha_x
+        ffn_x = self.ln_ffn(ffn_x)
         return EncoderInput(encoder_input=ffn_x, mask=x.mask)
 
 
@@ -65,16 +51,13 @@ class DecoderLayer(nn.Module):
     def forward(self, x: DecoderInput) -> DecoderInput:
         t = x.decoder_input.shape[1]
         m_mha_x = self.mask_mha(x.decoder_input, x.decoder_input, x.decoder_input, x.decoder_mask)
-        m_mha_x = F.dropout(m_mha_x, p=self.dropout_rate)
-        m_mha_x += x.decoder_input
+        m_mha_x = F.dropout(m_mha_x, p=self.dropout_rate) + x.decoder_input
         m_mha_x = self.ln_m_mha(m_mha_x)
         mha_x = self.mha(m_mha_x, x.encoder_output, x.encoder_output, x.encoder_mask[:, :t, :])
-        mha_x = F.dropout(mha_x, p=self.dropout_rate)
-        mha_x += m_mha_x
+        mha_x = F.dropout(mha_x, p=self.dropout_rate) + m_mha_x
         mha_x = self.ln_mha(mha_x)
         ffn_x = self.ffn(mha_x)
-        ffn_x = F.dropout(ffn_x, p=self.dropout_rate)
-        ffn_x += mha_x
+        ffn_x = F.dropout(ffn_x, p=self.dropout_rate) + mha_x
         ffn_x = self.ln_ffn(ffn_x)
         return DecoderInput(encoder_output=x.encoder_output,
                             decoder_input=ffn_x,
