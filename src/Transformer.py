@@ -22,9 +22,14 @@ class EncoderLayer(nn.Module):
 
     def forward(self, x: EncoderInput) -> EncoderInput:
         mha_x = self.mha(x.encoder_input, x.encoder_input, x.encoder_input, x.mask)
-        mha_x = self.ln_mha(F.dropout(mha_x, p=self.dropout_rate) + x.encoder_input)
+        mha_x = F.dropout(mha_x, p=self.dropout_rate, training=self.training)
+        mha_x = mha_x + x.encoder_input
+        mha_x = self.ln_mha(mha_x)
+
         ffn_x = self.ffn(mha_x)
-        ffn_x = self.ln_ffn(F.dropout(ffn_x, p=self.dropout_rate) + mha_x)
+        ffn_x = F.dropout(ffn_x, p=self.dropout_rate, training=self.training)
+        ffn_x = ffn_x + mha_x
+        ffn_x = self.ln_ffn(ffn_x)
         return EncoderInput(encoder_input=ffn_x, mask=x.mask)
 
 
@@ -49,12 +54,22 @@ class DecoderLayer(nn.Module):
 
     def forward(self, x: DecoderInput) -> DecoderInput:
         t = x.decoder_input.shape[1]
+
         m_mha_x = self.mask_mha(x.decoder_input, x.decoder_input, x.decoder_input, x.decoder_mask)
-        m_mha_x = self.ln_m_mha(F.dropout(m_mha_x, p=self.dropout_rate) + x.decoder_input)
+        m_mha_x = F.dropout(m_mha_x, p=self.dropout_rate, training=self.training)
+        m_mha_x = m_mha_x + x.decoder_input
+        m_mha_x = self.ln_m_mha(m_mha_x )
+
         mha_x = self.mha(m_mha_x, x.encoder_output, x.encoder_output, x.encoder_mask[:, :t, :])
-        mha_x = self.ln_mha(F.dropout(mha_x, p=self.dropout_rate) + m_mha_x)
+        mha_x = F.dropout(mha_x, p=self.dropout_rate, training=self.training)
+        mha_x = mha_x + m_mha_x
+        mha_x = self.ln_mha(mha_x)
+
         ffn_x = self.ffn(mha_x)
-        ffn_x = self.ln_ffn(F.dropout(ffn_x, p=self.dropout_rate) + mha_x)
+        ffn_x = F.dropout(ffn_x, p=self.dropout_rate, training=self.training)
+        ffn_x = ffn_x + mha_x
+        ffn_x = self.ln_ffn(ffn_x)
+
         return DecoderInput(encoder_output=x.encoder_output,
                             decoder_input=ffn_x,
                             decoder_mask=x.decoder_mask,
@@ -96,24 +111,26 @@ class Transformer(nn.Module):
     def infer(self, encoder_input: FloatTensor, encoder_mask: LongTensor, sos_symbol: int) -> FloatTensor:
         self.eval()
 
-        b, n, dk = encoder_input.shape
-        pe = PE(b, n, dk, dk, device=self.device)
-        encoder_output = self.encoder(EncoderInput(encoder_input + pe, encoder_mask)).encoder_input
-        sos_symbols = (torch.ones(b) * sos_symbol).long().to(self.device)
-        decoder_output = self.output_embedder(sos_symbols).unsqueeze(1) + pe[:, 0:1, :]
-        output_probs = torch.Tensor().to(self.device)
-        inferer = Inferer(self, encoder_output, encoder_mask, b)
+        with torch.no_grad():
+            b, n, dk = encoder_input.shape
+            pe = PE(b, n, dk, dk, device=self.device)
+            encoder_output = self.encoder(EncoderInput(encoder_input + pe, encoder_mask)).encoder_input
+            sos_symbols = (torch.ones(b) * sos_symbol).long().to(self.device)
+            decoder_output = self.output_embedder(sos_symbols).unsqueeze(1) + pe[:, 0:1, :]
+            output_probs = torch.Tensor().to(self.device)
+            inferer = infer_wrapper(self, encoder_output, encoder_mask, b)
 
-        for t in range(n):
-            prob_t = inferer(decoder_output, t)
-            class_t = prob_t.argmax(dim=-1)
-            emb_t = self.output_embedder(class_t).unsqueeze(1) + pe[:, t + 1:t + 2, :]
-            decoder_output = torch.cat([decoder_output, emb_t], dim=1)
-            output_probs = torch.cat([output_probs, prob_t.unsqueeze(1)], dim=1)
+            for t in range(n):
+                prob_t = inferer(decoder_output, t)
+                class_t = prob_t.argmax(dim=-1)
+                emb_t = self.output_embedder(class_t).unsqueeze(1) + pe[:, t + 1:t + 2, :]
+                decoder_output = torch.cat([decoder_output, emb_t], dim=1)
+                output_probs = torch.cat([output_probs, prob_t.unsqueeze(1)], dim=1)
+
         return output_probs
 
-    def infer_next(self, encoder_output: FloatTensor, encoder_mask: LongTensor, decoder_output: FloatTensor,
-                   t: int, b: int) -> FloatTensor:
+    def infer_one(self, encoder_output: FloatTensor, encoder_mask: LongTensor, decoder_output: FloatTensor,
+                  t: int, b: int) -> FloatTensor:
         decoder_step = self.decoder(DecoderInput(encoder_output=encoder_output, encoder_mask=encoder_mask,
                                                  decoder_input=decoder_output,
                                                  decoder_mask=Mask((b, t + 1, t + 1)).to(self.device))) \
@@ -278,18 +295,6 @@ class Transformer(nn.Module):
         return outer_beam_paths, outer_beam_scores
 
 
-class Inferer(object):
-    def __init__(self, transformer: Transformer, encoder_output: FloatTensor, encoder_mask: FloatTensor,
-                 b: int) -> None:
-        self.transformer = transformer
-        self.encoder_output = encoder_output
-        self.encoder_mask = encoder_mask
-        self.b = b
-
-    def __call__(self, decoder_input: FloatTensor, t: int) -> FloatTensor:
-        return self.transformer.infer_next(self.encoder_output, self.encoder_mask, decoder_input, t, self.b)
-
-
 def test(device: str):
     sl = 25
     nc = 1000
@@ -307,4 +312,5 @@ def test(device: str):
     # import pdb
     # pdb.set_trace()
     f_v = t.forward(encoder_input, decoder_input, encoder_mask, decoder_mask)
+    print('1')
     i_v = t.infer(encoder_input, encoder_mask, 0)

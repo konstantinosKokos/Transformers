@@ -48,7 +48,7 @@ def ScaledDotProduct(queries: FloatTensor, keys: FloatTensor, values: FloatTenso
     b, _, dk = keys.shape
     weights = torch.bmm(queries, keys.transpose(2, 1)) / math.sqrt(dk)  # [B, M, N]
     if mask is not None:
-        weights = weights.masked_fill(mask == 0, value=-1e10)
+        weights = weights.masked_fill_(mask == 0, value=-1e10)
     weights = F.softmax(weights, dim=-1)  # [B, M, N]
     return torch.bmm(weights, values)
 
@@ -71,7 +71,28 @@ def PE(b: int, n: int, d_inp: int, d_model: int, freq: int = 10000, device: str=
                          - (math.log(freq) / d_model))
     pe[:, 0::2] = torch.sin(position * div_term)
     pe[:, 1::2] = torch.cos(position * div_term)
+    # return pe.unsqueeze(0).expand(b, n, d_model)
     return pe.repeat(b, 1, 1)
+
+
+def Mask(size: Union[Tuple[int, int], Tuple[int, int, int]]) -> LongTensor:
+    mask = np.triu(np.ones(size), k=1)
+    return torch.from_numpy(mask) == 0
+
+
+def PT(b: int, t: int, n: int, d_inp: int, d_model: int, freq: int = 10000, device: str='cpu') -> FloatTensor:
+    pe = torch.zeros(n, d_model, device=device)
+    position = torch.arange(0, n, device=device, dtype=torch.float).unsqueeze(1)
+    div_term = torch.exp(torch.arange(0, d_inp, 2, device=device, dtype=torch.float) *
+                         - (math.log(freq) / d_model))
+    times = torch.arange(0, t, device=device, dtype=torch.float).unsqueeze(1)
+    pe[:, 0::2] = torch.sin(position * div_term)
+    pe[:, 1::2] = torch.cos(position * div_term)
+    pe = pe.repeat(t, 1, 1)
+
+    pe[:, :, 0::2] = pe[:, :, 0::2] + torch.sin(times * div_term).unsqueeze(1).expand(t, n, d_inp//2)
+    pe[:, :, 1::2] = pe[:, :, 1::2] + torch.cos(times * div_term).unsqueeze(1).expand(t, n, d_inp//2)
+    return pe.unsqueeze(1).expand(t, b, n, d_model)
 
 
 def Mask(size: Union[Tuple[int, int], Tuple[int, int, int]]) -> LongTensor:
@@ -91,7 +112,7 @@ class CustomLRScheduler(object):
     def step(self) -> None:
         self._step += 1
         self.lr = self.update(step=self._step, **{k: v for k, v in self.__dict__.items() if k not in
-                             ('_step', 'opt', 'update_fn', 'lr')})
+                              ('_step', 'opt', 'update_fn', 'lr')})
         for p in self.opt.param_groups:
             p['lr'] = self.lr
         self.opt.step()
@@ -121,6 +142,11 @@ class FuzzyLoss(object):
         mask = y == 0
         y_float[mask.unsqueeze(1).repeat(1, self.nc, 1)] = 0
         return self.loss_fn(x, y_float)
+
+
+def infer_wrapper(transformer: nn.Module, encoder_output: FloatTensor, encoder_mask: FloatTensor, b: int) -> \
+        Callable[[FloatTensor, int], FloatTensor]:
+    return lambda decoder_input, t: transformer.infer_one(encoder_output, encoder_mask, decoder_input, t, b)
 
 
 def count_parameters(model: nn.Module) -> int:

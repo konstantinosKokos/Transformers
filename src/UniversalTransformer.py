@@ -22,9 +22,9 @@ class RecurrentEncoder(nn.Module):
 
     def forward(self, x: EncoderInput) -> EncoderInput:
         b, n, dk = x.encoder_input.shape
+        pt = PT(b, self.num_repeats, n, dk, dk, device=x.encoder_input.device)
         for i in range(self.num_repeats):
-            x = self.layer(EncoderInput(encoder_input=x.encoder_input + PT(b, i, n, dk, dk,
-                                                                           device=x.encoder_input.device),
+            x = self.layer(EncoderInput(encoder_input=x.encoder_input + pt[i],
                                         mask=x.mask))
         return x
 
@@ -38,9 +38,9 @@ class RecurrentDecoder(nn.Module):
 
     def forward(self, x: DecoderInput) -> DecoderInput:
         b, n, dk = x.decoder_input.shape
+        pt = PT(b, self.num_repeats, n, dk, dk, device=x.encoder_output.device)
         for i in range(self.num_repeats):
-            x = self.layer(DecoderInput(decoder_input=x.decoder_input + PT(b, i, n, dk, dk,
-                                                                           device=x.decoder_input.device),
+            x = self.layer(DecoderInput(decoder_input=x.decoder_input + pt[i],
                                         encoder_output=x.encoder_output,
                                         decoder_mask=x.decoder_mask,
                                         encoder_mask=x.encoder_mask))
@@ -77,33 +77,30 @@ class UniversalTransformer(nn.Module):
     def infer(self, encoder_input: FloatTensor, encoder_mask: LongTensor, sos_symbol: int) -> FloatTensor:
         self.eval()
 
-        b, n, dk = encoder_input.shape
-        pe = PT(b, 0, n, dk, dk, device=self.device)
-        encoder_output = self.encoder(EncoderInput(encoder_input + pe, encoder_mask)).encoder_input
-        sos_symbols = (torch.ones(b, device=self.device) * sos_symbol).long()
-        decoder_output = self.output_embedder(sos_symbols).unsqueeze(1) + pe[:, 0:1, :]
-        output_probs = torch.Tensor().to(self.device)
-        inferer = Inferer(self, encoder_output, encoder_mask, b)
+        with torch.no_grad():
+            b, n, dk = encoder_input.shape
+            encoder_output = self.encoder(EncoderInput(encoder_input, encoder_mask)).encoder_input
+            sos_symbols = (torch.ones(b, device=self.device) * sos_symbol).long()
+            decoder_output = self.output_embedder(sos_symbols).unsqueeze(1)
+            output_probs = torch.Tensor().to(self.device)
+            inferer = infer_wrapper(self, encoder_output, encoder_mask, b)
 
-        for t in range(n):
-            prob_t = inferer(decoder_output, t)
-            class_t = prob_t.argmax(dim=-1)
-            emb_t = self.output_embedder(class_t).unsqueeze(1) + pe[:, t + 1:t + 2, :]
-            decoder_output = torch.cat([decoder_output, emb_t], dim=1)
-            output_probs = torch.cat([output_probs, prob_t.unsqueeze(1)], dim=1)
+            for t in range(n):
+                prob_t = inferer(decoder_output, t)
+                class_t = prob_t.argmax(dim=-1)
+                emb_t = self.output_embedder(class_t).unsqueeze(1)
+                decoder_output = torch.cat([decoder_output, emb_t], dim=1)
+                output_probs = torch.cat([output_probs, prob_t.unsqueeze(1)], dim=1)
         return output_probs
 
-
-class Inferer(object):
-    def __init__(self, transformer: UniversalTransformer, encoder_output: FloatTensor, encoder_mask: FloatTensor,
-                 b: int) -> None:
-        self.transformer = transformer
-        self.encoder_output = encoder_output
-        self.encoder_mask = encoder_mask
-        self.b = b
-
-    def __call__(self, decoder_input: FloatTensor, t: int) -> FloatTensor:
-        return self.transformer.infer_next(self.encoder_output, self.encoder_mask, decoder_input, t, self.b)
+    def infer_one(self, encoder_output: FloatTensor, encoder_mask: LongTensor, decoder_output: FloatTensor,
+                  t: int, b: int) -> FloatTensor:
+        decoder_step = self.decoder(DecoderInput(encoder_output=encoder_output, encoder_mask=encoder_mask,
+                                                 decoder_input=decoder_output,
+                                                 decoder_mask=Mask((b, t + 1, t + 1)).to(self.device))) \
+            .decoder_input
+        prob_t = self.predictor(decoder_step[:, -1])
+        return sigsoftmax(prob_t)  # b, num_classes
 
 
 def test(device: str):
@@ -117,3 +114,4 @@ def test(device: str):
     decoder_input = torch.rand(128, sl, 300).to(device)
     decoder_mask = Mask((128, sl, sl)).to(device)
     f_v = t.forward(encoder_input, decoder_input, encoder_mask, decoder_mask)
+    i_v = t.infer(encoder_input, encoder_mask, 0)
