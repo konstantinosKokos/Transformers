@@ -7,10 +7,8 @@ import numpy as np
 
 try:
     from src.utils import *
-    from src.BeamSearch import Beam
 except ImportError:
     from Transformer.src.utils import *
-    from Transformer.src.BeamSearch import Beam
 
 
 class EncoderLayer(nn.Module):
@@ -267,8 +265,6 @@ class Transformer(nn.Module):
                 # tensor of shape K, B, t+2, F
                 new_outer_beam_decoder_outputs = torch.zeros(beam_width, b, t + 2, dk,
                                                              device=self.device, dtype=torch.float)
-
-                # todo replace slicing and indexing ops with stack/cat
                 # update the paths and embeddings
                 new_outer_beam_paths = torch.tensor([], dtype=torch.long, device=self.device)
                 for i, new_best in enumerate(square_indices):
@@ -277,15 +273,13 @@ class Transformer(nn.Module):
                         this_sentence_history = outer_beam_paths[k_outer][s:s+1].squeeze(0)
                         this_sentence_future = per_beam_paths[k_outer, k_inner, s:s+1]
                         this_sentence_path = torch.cat((this_sentence_history, this_sentence_future))
-
-                        # this_sentence_path = torch.cat((outer_beam_paths[k_outer][s],
-                        #                                 per_beam_paths[k_outer, k_inner, s].unsqueeze(0)))
                         this_beam_path = torch.cat((this_beam_path, this_sentence_path.unsqueeze(0)), dim=0)
+                        new_outer_beam_decoder_outputs[i, s, :t+1] = outer_beam_decoder_outputs[k_outer]
 
                     new_outer_beam_paths = torch.cat((new_outer_beam_paths, this_beam_path.unsqueeze(0)), dim=0)
+
                 new_outer_beam_decoder_outputs[:, :, t + 1] = \
-                    self.output_embedder(new_outer_beam_paths[:, :, t]) + pe[:, t + 1].repeat(beam_width, 1, 1)
-                # new_outer_beam_decoder_outputs = self.output_embedder(new_outer_beam_paths) + pe[:, :t+2]
+                    self.output_embedder(new_outer_beam_paths[:, :, t]) + pe[:, t + 1]
 
                 outer_beam_paths = new_outer_beam_paths
                 outer_beam_decoder_outputs = new_outer_beam_decoder_outputs.view(beam_width * b, t + 2, dk)
@@ -302,8 +296,8 @@ def test(device: str):
     encoder_mask = torch.ones(128, sl, sl).to(device)
     decoder_input = torch.rand(128, sl, 300).to(device)
     decoder_mask = Mask((128, sl, sl)).to(device)
-    beam = t.vectorized_beam_search(encoder_input[0:20], encoder_mask[0:20], 0, 3)
-    # import pdb
-    # pdb.set_trace()
+    p, s = t.vectorized_beam_search(encoder_input[0:20], encoder_mask[0:20], 0, 3)
+    import pdb
+    pdb.set_trace()
     f_v = t.forward(encoder_input, decoder_input, encoder_mask, decoder_mask)
     i_v = t.infer(encoder_input, encoder_mask, 0)
