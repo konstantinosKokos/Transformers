@@ -1,4 +1,4 @@
-from typing import NamedTuple, Optional, Callable, Iterable, Any, Union, Tuple, List
+from typing import NamedTuple, Optional, Callable, Iterable, Any, Union, Tuple, List, Sequence
 from torch.nn import functional as F
 from torch import nn
 import torch
@@ -25,15 +25,17 @@ DecoderInput = NamedTuple('DecoderInput', [('encoder_output', FloatTensor),
 #########################################################################################
 
 
-def argmax_top_k(x: FloatTensor, k: int) -> List[Tuple[FloatTensor, LongTensor]]:
+def argmax_top_k(x: FloatTensor, k: int) -> Tuple[LongTensor, FloatTensor]:
     copy = x.clone().detach().requires_grad_(False)
-    ret = []
+    retv, reti = [], []
     for repeat in range(k):
         values, indices = torch.max(copy, dim=-1)
         mask = torch.arange(x.size(-1), device=x.device).reshape(1, -1) == indices.unsqueeze(-1)
         copy[mask] = -float('inf')
-        ret.append((values, indices))
-    return ret
+        retv.append(values)
+        reti.append(indices)
+    retv, reti = torch.stack(retv), torch.stack(reti)
+    return retv, reti
 
 
 def sigsoftmax(x: FloatTensor) -> FloatTensor:
@@ -93,11 +95,6 @@ def PT(b: int, t: int, n: int, d_inp: int, d_model: int, freq: int = 10000, devi
     pe[:, :, 0::2] = pe[:, :, 0::2] + torch.sin(times * div_term).unsqueeze(1).expand(t, n, d_inp//2)
     pe[:, :, 1::2] = pe[:, :, 1::2] + torch.cos(times * div_term).unsqueeze(1).expand(t, n, d_inp//2)
     return pe.unsqueeze(1).expand(t, b, n, d_model)
-
-
-def Mask(size: Union[Tuple[int, int], Tuple[int, int, int]]) -> LongTensor:
-    mask = np.triu(np.ones(size), k=1)
-    return torch.from_numpy(mask) == 0
 
 
 class CustomLRScheduler(object):
