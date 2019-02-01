@@ -170,6 +170,9 @@ class Transformer(nn.Module):
                                                     self.output_embedder(outer_beam_paths).view(beam_width*b, 1, dk)+
                                                     pe[:, 1:2].repeat(beam_width, 1, 1)),
                                                    dim=1)
+
+            outer_beam_scores = torch.log(outer_beam_scores)
+
             # expand the paths for later
             outer_beam_paths = outer_beam_paths.unsqueeze(-1)
             # construct a new inferer for batched beams
@@ -185,17 +188,15 @@ class Transformer(nn.Module):
 
                 # tensor of shape K0, K1, B, where K0 indexes the source and K1 indexes the gen
                 per_beam_scores = torch.cat([x[0].unsqueeze(0) for x in per_beam_top_k])
+                per_beam_scores = torch.log(per_beam_scores)
                 per_beam_paths = torch.cat([x[1].unsqueeze(0) for x in per_beam_top_k])
 
                 # tensor of shape K, K, B
                 masked_sentences = (encoder_mask[:, t + 1, t + 1] == 0).repeat(beam_width, beam_width, 1)
                 per_beam_scores[masked_sentences] = 1
 
-                # todo: faster
-                # tensor of shape K, K, B containing the updated scores
-                # pbs[i, j, k] = pbs[i, j, k] * [i, k]
-                # per_beam_scores = per_beam_scores * outer_beam_scores
-                per_beam_scores = torch.einsum('ijk,ik->ijk', per_beam_scores, outer_beam_scores)
+                outer_beam_scores = outer_beam_scores.unsqueeze(1).expand(beam_width, beam_width, b)
+                per_beam_scores = per_beam_scores * outer_beam_scores
 
                 # tensor of shape K^2, B -> B, K^2
                 per_beam_scores = per_beam_scores.view(beam_width ** 2, b).transpose(1, 0)
@@ -219,7 +220,6 @@ class Transformer(nn.Module):
                         this_beam_path = torch.cat((this_beam_path, this_sentence_path.unsqueeze(0)), dim=0)
                         new_outer_beam_decoder_outputs[i, s, :t+1] = outer_beam_decoder_outputs[k_outer][s]
 
-                    # todo to check
                     new_outer_beam_paths = torch.cat((new_outer_beam_paths, this_beam_path.unsqueeze(0)), dim=0)
 
                 new_outer_beam_decoder_outputs[:, :, t + 1] = \
