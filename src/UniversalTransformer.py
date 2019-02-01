@@ -50,7 +50,8 @@ class RecurrentDecoder(nn.Module):
 class UniversalTransformer(nn.Module):
     def __init__(self, num_classes: int, output_embedder: tensor_map,
                  encoder_layers: int = 6, num_heads: int = 8, decoder_layers: int = 6, d_model: int = 300,
-                 d_intermediate: int = 1024, dropout: float=0.1, device: str='cpu') -> None:
+                 d_intermediate: int = 1024, dropout: float=0.1, device: str='cpu',
+                 activation: Callable[[FloatTensor], FloatTensor] = sigsoftmax) -> None:
         self.device = device
         super(UniversalTransformer, self).__init__()
         self.encoder = RecurrentEncoder(num_steps=encoder_layers, num_heads=num_heads, d_model=d_model,
@@ -61,6 +62,7 @@ class UniversalTransformer(nn.Module):
                                         dropout=dropout, d_intermediate=d_intermediate).to(self.device)
         self.predictor = nn.Linear(in_features=d_model, out_features=num_classes).to(self.device)
         self.output_embedder = output_embedder
+        self.activation = activation
 
     def forward(self, encoder_input: FloatTensor, decoder_input: FloatTensor, encoder_mask: LongTensor,
                 decoder_mask: LongTensor) -> FloatTensor:
@@ -72,7 +74,8 @@ class UniversalTransformer(nn.Module):
                                                    encoder_mask=encoder_mask,
                                                    decoder_input=decoder_input,
                                                    decoder_mask=decoder_mask))
-        return torch.log(sigsoftmax(self.predictor(decoder_output.decoder_input)))
+        prediction = self.predictor(decoder_output.decoder_input)
+        return torch.log(self.activation(prediction))
 
     def infer(self, encoder_input: FloatTensor, encoder_mask: LongTensor, sos_symbol: int) -> FloatTensor:
         self.eval()
@@ -100,7 +103,7 @@ class UniversalTransformer(nn.Module):
                                                  decoder_mask=Mask((b, t + 1, t + 1)).to(self.device))) \
             .decoder_input
         prob_t = self.predictor(decoder_step[:, -1])
-        return sigsoftmax(prob_t)  # b, num_classes
+        return self.activation(prob_t)  # b, num_classes
 
     def vectorized_beam_search(self, encoder_input: FloatTensor, encoder_mask: LongTensor, sos_symbol: int,
                                beam_width: int):
