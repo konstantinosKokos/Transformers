@@ -25,7 +25,7 @@ class RecurrentEncoder(nn.Module):
         pt = PT(b, self.num_repeats, n, dk, dk, device=x.encoder_input.device)
         for i in range(self.num_repeats):
             x = self.layer(EncoderInput(encoder_input=x.encoder_input + pt[i],
-                                        mask=x.mask))
+                                        mask=x.mask[:, :n]))
         return x
 
 
@@ -198,9 +198,9 @@ def test(device: str):
     embedder = torch.nn.Embedding(nc, 300).to(device)
     t = UniversalTransformer(12, embedder, device=device)
     encoder_input = torch.rand(128, sl, 300).to(device)
-    encoder_mask = torch.ones(128, sl, sl).to(device)
-    decoder_input = torch.rand(128, sl, 300).to(device)
-    decoder_mask = Mask((128, sl, sl)).to(device)
-    paths, scores = t.vectorized_beam_search(encoder_input, encoder_mask, 0, 3)
+    encoder_mask = torch.ones(128, sl * 2, sl).to(device)
+    decoder_input = torch.rand(128, sl * 2, 300).to(device)
+    decoder_mask = Mask((128, sl*2, sl*2)).to(device)
+    paths, scores = t.vectorized_beam_search(encoder_input[:5], encoder_mask[:5], 0, 3)
     f_v = t.forward(encoder_input, decoder_input, encoder_mask, decoder_mask)
     i_v = t.infer(encoder_input, encoder_mask, 0)

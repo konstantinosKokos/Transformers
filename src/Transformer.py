@@ -21,7 +21,8 @@ class EncoderLayer(nn.Module):
         self.ln_ffn = nn.LayerNorm(normalized_shape=d_model)
 
     def forward(self, x: EncoderInput) -> EncoderInput:
-        mha_x = self.mha(x.encoder_input, x.encoder_input, x.encoder_input, x.mask)
+        n_in = x.encoder_input.shape[1]
+        mha_x = self.mha(x.encoder_input, x.encoder_input, x.encoder_input[:, :n_in, :], x.mask)
         mha_x = F.dropout(mha_x, p=self.dropout_rate, training=self.training)
         mha_x = mha_x + x.encoder_input
         mha_x = self.ln_mha(mha_x)
@@ -58,7 +59,7 @@ class DecoderLayer(nn.Module):
         m_mha_x = self.mask_mha(x.decoder_input, x.decoder_input, x.decoder_input, x.decoder_mask)
         m_mha_x = F.dropout(m_mha_x, p=self.dropout_rate, training=self.training)
         m_mha_x = m_mha_x + x.decoder_input
-        m_mha_x = self.ln_m_mha(m_mha_x )
+        m_mha_x = self.ln_m_mha(m_mha_x)
 
         mha_x = self.mha(m_mha_x, x.encoder_output, x.encoder_output, x.encoder_mask[:, :t, :])
         mha_x = F.dropout(mha_x, p=self.dropout_rate, training=self.training)
@@ -78,7 +79,8 @@ class DecoderLayer(nn.Module):
 
 def Decoder(num_layers: int, num_heads: int, d_model: int, d_k: int, d_v: int, d_intermediate: int, dropout: float=0.1)\
         -> nn.Sequential:
-    return nn.Sequential(*[DecoderLayer(num_heads, d_model, d_k, d_v, d_intermediate, dropout) for _ in range(num_layers)])
+    return nn.Sequential(*[DecoderLayer(num_heads, d_model, d_k, d_v, d_intermediate, dropout)
+                           for _ in range(num_layers)])
 
 
 class Transformer(nn.Module):
@@ -103,10 +105,12 @@ class Transformer(nn.Module):
         self.train()
 
         b, n, dk = encoder_input.shape
+        n_out = decoder_input.shape[1]
         pe = PE(b, n, dk, dk, device=self.device)
-        encoder_output = self.encoder(EncoderInput(encoder_input + pe, encoder_mask))
+        pe_dec = PE(b, n_out, dk, dk, device=self.device)
+        encoder_output = self.encoder(EncoderInput(encoder_input + pe, encoder_mask[:, :n, :]))
         decoder_output = self.decoder(DecoderInput(encoder_output=encoder_output.encoder_input,
-                                                   encoder_mask=encoder_mask, decoder_input=decoder_input + pe,
+                                                   encoder_mask=encoder_mask, decoder_input=decoder_input + pe_dec,
                                                    decoder_mask=decoder_mask))
         prediction = self.predictor(decoder_output.decoder_input)
         return torch.log(self.activation(prediction))
@@ -117,7 +121,7 @@ class Transformer(nn.Module):
         with torch.no_grad():
             b, n, dk = encoder_input.shape
             pe = PE(b, n, dk, dk, device=self.device)
-            encoder_output = self.encoder(EncoderInput(encoder_input + pe, encoder_mask)).encoder_input
+            encoder_output = self.encoder(EncoderInput(encoder_input + pe, encoder_mask[:, :n, :])).encoder_input
             sos_symbols = (torch.ones(b) * sos_symbol).long().to(self.device)
             decoder_output = self.output_embedder(sos_symbols).unsqueeze(1) + pe[:, 0:1, :]
             output_probs = torch.Tensor().to(self.device)
@@ -155,7 +159,7 @@ class Transformer(nn.Module):
             b, n, dk = encoder_input.shape
             pe = PE(b, n, dk, dk, device=self.device)
 
-            encoder_output = self.encoder(EncoderInput(encoder_input + pe, encoder_mask)).encoder_input
+            encoder_output = self.encoder(EncoderInput(encoder_input + pe, encoder_mask[:, :n, :])).encoder_input
             sos_symbols = (torch.ones(b, device=self.device) * sos_symbol).long()
             # tensor of shape B, 1, F
             decoder_output = self.output_embedder(sos_symbols).unsqueeze(1) + pe[:, 0:1]
@@ -240,11 +244,11 @@ def test(device: str):
     embedder = torch.nn.Embedding(nc, 300).to(device)
     t = Transformer(12, embedder, device=device)
     encoder_input = torch.rand(128, sl, 300).to(device)
-    encoder_mask = torch.ones(128, sl, sl).to(device)
-    decoder_input = torch.rand(128, sl, 300).to(device)
-    decoder_mask = Mask((128, sl, sl)).to(device)
+    encoder_mask = torch.ones(128, sl*2, sl).to(device)
+    decoder_input = torch.rand(128, sl * 2, 300).to(device)
+    decoder_mask = Mask((128, sl * 2, sl * 2)).to(device)
     p, s = t.vectorized_beam_search(encoder_input[0:20], encoder_mask[0:20], 0, 1)
-    # f_v = t.forward(encoder_input, decoder_input, encoder_mask, decoder_mask)
+    f_v = t.forward(encoder_input, decoder_input, encoder_mask, decoder_mask)
     i_v = t.infer(encoder_input[0:20], encoder_mask[0:20], 0)
     import pdb
     pdb.set_trace()

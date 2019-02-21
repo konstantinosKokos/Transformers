@@ -49,6 +49,7 @@ def ScaledDotProduct(queries: FloatTensor, keys: FloatTensor, values: FloatTenso
                      mask: Optional[LongTensor] = None) -> FloatTensor:
     b, _, dk = keys.shape
     weights = torch.bmm(queries, keys.transpose(2, 1)) / math.sqrt(dk)  # [B, M, N]
+
     if mask is not None:
         weights = weights.masked_fill_(mask == 0, value=-1e10)
     weights = F.softmax(weights, dim=-1)  # [B, M, N]
@@ -121,8 +122,8 @@ class CustomLRScheduler(object):
         return self.update_fn(step, **kwargs)
 
 
-def noam_scheme(_step: int, d_model: int, warmup_steps: int) -> float:
-    return d_model**-0.5 * min(_step**-0.5, _step*warmup_steps**-1.5)
+def noam_scheme(_step: int, d_model: int, warmup_steps: int, batch_size: int=2048) -> float:
+    return d_model**-0.5 * min(_step**-0.5, _step*warmup_steps**-1.5) * batch_size/2048
 
 
 class FuzzyLoss(object):
