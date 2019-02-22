@@ -24,6 +24,17 @@ DecoderInput = NamedTuple('DecoderInput', [('encoder_output', FloatTensor),
 # # # # # # # # # # # # # # # # # # # # # UTILS # # # # # # # # # # # # # # # # # # # # #
 #########################################################################################
 
+class gelu(nn.Module):
+    def __init__(self):
+        super(gelu, self).__init__()
+
+    def forward(self, x: FloatTensor):
+        return gelu_fn(x)
+
+
+def gelu_fn(x: FloatTensor) -> FloatTensor:
+    return 0.5*x * (1 + torch.tanh(0.7978845608028654*(x+0.044715*x**3)))
+
 
 def argmax_top_k(x: FloatTensor, k: int) -> Tuple[LongTensor, FloatTensor]:
     copy = x.clone().detach().requires_grad_(False)
@@ -128,16 +139,17 @@ def noam_scheme(_step: int, d_model: int, warmup_steps: int, batch_size: int=204
 
 class FuzzyLoss(object):
     def __init__(self, loss_fn: Callable[[FloatTensor, FloatTensor], FloatTensor], num_classes: int,
-                 mass_redistribution: float) -> None:
+                 mass_redistribution: float, ignore_index: int=0) -> None:
         self.loss_fn = loss_fn
         self.nc = num_classes
         self.mass_redistribution = mass_redistribution
+        self.ignore_idx = ignore_index
 
     def __call__(self, x: FloatTensor, y: LongTensor) -> FloatTensor:
         y_float = torch.zeros(x.shape[0], self.nc, x.shape[2], device=x.device, dtype=torch.float)
         y_float.fill_(self.mass_redistribution / (self.nc - 1))
         y_float.scatter_(1, y.unsqueeze(1), 1 - self.mass_redistribution)
-        mask = y == 0
+        mask = y == self.ignore_idx
         y_float[mask.unsqueeze(1).repeat(1, self.nc, 1)] = 0
         return self.loss_fn(x, y_float)
 
@@ -186,7 +198,7 @@ class FFN(nn.Module):
         super(FFN, self).__init__()
         self.network = nn.Sequential(
             nn.Linear(in_features=d_model, out_features=d_intermediate),
-            nn.ReLU(),
+            gelu(),
             nn.Linear(in_features=d_intermediate, out_features=d_model)
         )
 
