@@ -48,10 +48,10 @@ class RecurrentDecoder(nn.Module):
 
 
 class UniversalTransformer(nn.Module):
-    def __init__(self, num_classes: int, output_embedder: tensor_map,
-                 encoder_layers: int = 6, num_heads: int = 8, decoder_layers: int = 6, d_model: int = 300,
-                 d_intermediate: int = 1024, dropout: float=0.1, device: str='cpu',
-                 activation: Callable[[FloatTensor], FloatTensor] = sigsoftmax) -> None:
+    def __init__(self, num_classes: int, encoder_layers: int = 6, num_heads: int = 8, decoder_layers: int = 6,
+                 d_model: int = 300, d_intermediate: int = 1024, dropout: float=0.1, device: str='cpu',
+                 activation: Callable[[FloatTensor], FloatTensor] = sigsoftmax,
+                 reuse_embedding: bool=True) -> None:
         self.device = device
         super(UniversalTransformer, self).__init__()
         self.encoder = RecurrentEncoder(num_steps=encoder_layers, num_heads=num_heads, d_model=d_model,
@@ -60,8 +60,14 @@ class UniversalTransformer(nn.Module):
         self.decoder = RecurrentDecoder(num_steps=decoder_layers, num_heads=num_heads, d_model=d_model,
                                         d_k=d_model // num_heads, d_v=d_model // num_heads,
                                         dropout=dropout, d_intermediate=d_intermediate).to(self.device)
-        self.predictor = nn.Linear(in_features=d_model, out_features=num_classes).to(self.device)
-        self.output_embedder = output_embedder
+        self.embedding_matrix = torch.nn.Parameter(torch.rand(num_classes, d_model, device=device) * 0.02)
+        self.output_embedder = lambda x: torch.nn.functional.embedding(x, self.embedding_matrix, padding_idx=0,
+                                                                       scale_grad_by_freq=True)
+        if reuse_embedding:
+            self.predictor = lambda x: x@(self.embedding_matrix.transpose(1, 0) + 1e-10)
+        else:
+            self.predictor = nn.Linear(in_features=d_model, out_features=num_classes).to(self.device)        # self.predictor = nn.Linear(in_features=d_model, out_features=num_classes).to(self.device)
+        # self.output_embedder = output_embedder
         self.activation = activation
 
     def forward(self, encoder_input: FloatTensor, decoder_input: FloatTensor, encoder_mask: LongTensor,
@@ -195,8 +201,7 @@ def test(device: str):
     sl = 25
     nc = 1000
 
-    embedder = torch.nn.Embedding(nc, 300).to(device)
-    t = UniversalTransformer(12, embedder, device=device)
+    t = UniversalTransformer(12, device=device)
     encoder_input = torch.rand(128, sl, 300).to(device)
     encoder_mask = torch.ones(128, sl * 2, sl).to(device)
     decoder_input = torch.rand(128, sl * 2, 300).to(device)
