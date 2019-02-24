@@ -110,27 +110,28 @@ def PT(b: int, t: int, n: int, d_inp: int, d_model: int, freq: int = 10000, devi
 
 
 class CustomLRScheduler(object):
-    def __init__(self, optimizer: torch.optim.Optimizer, update_fn: Callable[[int, Any], float],
+    def __init__(self, optimizer: torch.optim.Optimizer, update_fns: Sequence[Callable[[int, Any], float]],
                  **kwargs: Any) -> None:
+        assert len(update_fns) == len(optimizer.param_groups)
         self.opt = optimizer
         self._step = 0
-        self.update_fn = update_fn
-        self.lr = None
+        self.update_fns = update_fns
+        self.lrs = [None for _ in range(len(self.opt.param_groups))]
         self.__dict__.update(kwargs)
 
     def step(self) -> None:
         self._step += 1
-        self.lr = self.update(step=self._step, **{k: v for k, v in self.__dict__.items() if k not in
-                              ('_step', 'opt', 'update_fn', 'lr')})
-        for p in self.opt.param_groups:
-            p['lr'] = self.lr
+        self.lrs = self.update(step=self._step, **{k: v for k, v in self.__dict__.items() if k not in
+                                                   ('_step', 'opt', 'update_fns', 'lrs')})
+        for i, p in enumerate(self.opt.param_groups):
+            p['lr'] = self.lrs[i]
         self.opt.step()
 
     def zero_grad(self) -> None:
         self.opt.zero_grad()
 
-    def update(self, step: int, **kwargs) -> float:
-        return self.update_fn(step, **kwargs)
+    def update(self, step: int, **kwargs) -> List[float]:
+        return [update_fn(step, **kwargs) for update_fn in self.update_fns]
 
 
 def noam_scheme(_step: int, d_model: int, warmup_steps: int, batch_size: int=2048) -> float:
