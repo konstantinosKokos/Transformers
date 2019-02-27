@@ -160,10 +160,10 @@ class UniversalTransformer(nn.Module):
 
                 # tensor of shape K, K, B
                 masked_sentences = (encoder_mask[:, t + 1, t + 1] == 0).repeat(beam_width, beam_width, 1)
-                per_beam_scores[masked_sentences] = 1
+                per_beam_scores[masked_sentences] = 0.
 
                 outer_beam_scores = outer_beam_scores.unsqueeze(1).expand(beam_width, beam_width, b)
-                per_beam_scores = per_beam_scores * outer_beam_scores
+                per_beam_scores = per_beam_scores + outer_beam_scores
 
                 # tensor of shape K^2, B -> B, K^2
                 per_beam_scores = per_beam_scores.view(beam_width ** 2, b).transpose(1, 0)

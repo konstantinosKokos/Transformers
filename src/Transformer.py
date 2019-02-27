@@ -22,9 +22,10 @@ class EncoderLayer(nn.Module):
 
     def forward(self, x: EncoderInput) -> EncoderInput:
         n_in = x.encoder_input.shape[1]
-        mha_x = self.mha(x.encoder_input, x.encoder_input, x.encoder_input[:, :n_in, :], x.mask)
+        x_drop = F.dropout(x.encoder_input, p=self.dropout_rate, training=self.training)
+        mha_x = self.mha(x_drop, x_drop, x_drop, x.mask[:, :n_in])
         mha_x = F.dropout(mha_x, p=self.dropout_rate, training=self.training)
-        mha_x = mha_x + x.encoder_input
+        mha_x = mha_x + x_drop
         mha_x = self.ln_mha(mha_x)
 
         ffn_x = self.ffn(mha_x)
@@ -55,10 +56,10 @@ class DecoderLayer(nn.Module):
 
     def forward(self, x: DecoderInput) -> DecoderInput:
         t = x.decoder_input.shape[1]
-
-        m_mha_x = self.mask_mha(x.decoder_input, x.decoder_input, x.decoder_input, x.decoder_mask)
+        x_drop = F.dropout(x.decoder_input, p=self.dropout_rate, training=self.training)
+        m_mha_x = self.mask_mha(x_drop, x_drop, x_drop, x.decoder_mask)
         m_mha_x = F.dropout(m_mha_x, p=self.dropout_rate, training=self.training)
-        m_mha_x = m_mha_x + x.decoder_input
+        m_mha_x = m_mha_x + x_drop
         m_mha_x = self.ln_m_mha(m_mha_x)
 
         mha_x = self.mha(m_mha_x, x.encoder_output, x.encoder_output, x.encoder_mask[:, :t, :])
@@ -179,7 +180,7 @@ class Transformer(nn.Module):
             outer_beam_scores, outer_beam_paths = argmax_top_k(probs_0, k=beam_width)
             # embed them, concatenate with sos symbols and reshape for batching
             outer_beam_decoder_outputs = torch.cat((decoder_output.repeat(beam_width, 1, 1),
-                                                    self.output_embedder(outer_beam_paths).view(beam_width*b, 1, dk)+
+                                                    self.output_embedder(outer_beam_paths).view(beam_width*b, 1, dk) +
                                                     pe[:, 1:2].repeat(beam_width, 1, 1)),
                                                    dim=1)
 
@@ -205,10 +206,10 @@ class Transformer(nn.Module):
 
                 # tensor of shape K, K, B
                 masked_sentences = (encoder_mask[:, t + 1, t + 1] == 0).repeat(beam_width, beam_width, 1)
-                per_beam_scores[masked_sentences] = 1
+                per_beam_scores[masked_sentences] = 0.
 
                 outer_beam_scores = outer_beam_scores.unsqueeze(1).expand(beam_width, beam_width, b)
-                per_beam_scores = per_beam_scores * outer_beam_scores
+                per_beam_scores = per_beam_scores + outer_beam_scores
 
                 # tensor of shape K^2, B -> B, K^2
                 per_beam_scores = per_beam_scores.view(beam_width ** 2, b).transpose(1, 0)
