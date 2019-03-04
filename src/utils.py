@@ -155,8 +155,8 @@ class FuzzyLoss(object):
 
 
 def infer_wrapper(transformer: nn.Module, encoder_output: FloatTensor, encoder_mask: FloatTensor, b: int) -> \
-        Callable[[FloatTensor, int], FloatTensor]:
-    return lambda decoder_input, t, decoder_mask: \
+        Callable[[FloatTensor, int, Optional[LongTensor]], FloatTensor]:
+    return lambda decoder_input, t, decoder_mask=None: \
         transformer.infer_one(encoder_output, encoder_mask, decoder_input, t, b, decoder_mask)
 
 
