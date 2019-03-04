@@ -33,7 +33,14 @@ class gelu(nn.Module):
 
 
 def gelu_fn(x: FloatTensor) -> FloatTensor:
-    return 0.5*x * (1 + torch.tanh(0.7978845608028654*(x+0.044715*x**3)))
+    return 0.5 * x * (1 + torch.tanh(0.7978845608028654*(x+0.044715*x**3)))
+
+
+def sigsoftmax(x: FloatTensor) -> FloatTensor:
+    sigx = torch.sigmoid(x) * torch.exp(x)
+    rank = len(sigx.shape)
+    norm = torch.sum(sigx, dim=-1).unsqueeze(-1).repeat([1 for _ in range(rank-1)] + [sigx.shape[-1]])
+    return sigx/norm
 
 
 def argmax_top_k(x: FloatTensor, k: int) -> Tuple[LongTensor, FloatTensor]:
@@ -49,21 +56,13 @@ def argmax_top_k(x: FloatTensor, k: int) -> Tuple[LongTensor, FloatTensor]:
     return retv, reti
 
 
-def sigsoftmax(x: FloatTensor) -> FloatTensor:
-    sigx = torch.sigmoid(x) * torch.exp(x)
-    rank = len(sigx.shape)
-    norm = torch.sum(sigx, dim=-1).unsqueeze(-1).repeat([1 for _ in range(rank-1)] + [sigx.shape[-1]])
-    return sigx/norm
-
-
 def ScaledDotProduct(queries: FloatTensor, keys: FloatTensor, values: FloatTensor,
                      mask: Optional[LongTensor] = None) -> FloatTensor:
-    b, _, dk = keys.shape
+    dk = keys.shape[-1]
     weights = torch.bmm(queries, keys.transpose(2, 1)) / math.sqrt(dk)  # [B, M, N]
-
     if mask is not None:
         weights = weights.masked_fill_(mask == 0, value=-1e10)
-    weights = F.softmax(weights, dim=-1)  # [B, M, N]
+    weights = F.softmax(weights, dim=-1)  # [B, M, N] -- each m thing attends a probability distribution over N things
     return torch.bmm(weights, values)
 
 
@@ -89,11 +88,6 @@ def PE(b: int, n: int, d_inp: int, d_model: int, freq: int = 10000, device: str=
     return pe.repeat(b, 1, 1)
 
 
-def Mask(size: Union[Tuple[int, int], Tuple[int, int, int]]) -> LongTensor:
-    mask = np.triu(np.ones(size), k=1)
-    return torch.from_numpy(mask) == 0
-
-
 def PT(b: int, t: int, n: int, d_inp: int, d_model: int, freq: int = 10000, device: str='cpu') -> FloatTensor:
     pe = torch.zeros(n, d_model, device=device)
     position = torch.arange(0, n, device=device, dtype=torch.float).unsqueeze(1)
@@ -107,6 +101,11 @@ def PT(b: int, t: int, n: int, d_inp: int, d_model: int, freq: int = 10000, devi
     pe[:, :, 0::2] = pe[:, :, 0::2] + torch.sin(times * div_term).unsqueeze(1).expand(t, n, d_inp//2)
     pe[:, :, 1::2] = pe[:, :, 1::2] + torch.cos(times * div_term).unsqueeze(1).expand(t, n, d_inp//2)
     return pe.unsqueeze(1).expand(t, b, n, d_model)
+
+
+def Mask(size: Union[Tuple[int, int], Tuple[int, int, int]]) -> LongTensor:
+    mask = np.triu(np.ones(size), k=1)
+    return torch.from_numpy(mask) == 0
 
 
 class CustomLRScheduler(object):
@@ -157,7 +156,8 @@ class FuzzyLoss(object):
 
 def infer_wrapper(transformer: nn.Module, encoder_output: FloatTensor, encoder_mask: FloatTensor, b: int) -> \
         Callable[[FloatTensor, int], FloatTensor]:
-    return lambda decoder_input, t: transformer.infer_one(encoder_output, encoder_mask, decoder_input, t, b)
+    return lambda decoder_input, t, decoder_mask: \
+        transformer.infer_one(encoder_output, encoder_mask, decoder_input, t, b, decoder_mask)
 
 
 def count_parameters(model: nn.Module) -> int:
