@@ -152,6 +152,8 @@ class UniversalTransformer(nn.Module):
             inferer = infer_wrapper(self, encoder_output.repeat(beam_width, 1, 1),
                                     encoder_mask.repeat(beam_width, 1, 1), b * beam_width)
 
+            decoder_mask = decoder_mask.repeat(beam_width, 1, 1)
+
             for t in range(1, n-1):
                 # tensor of shape K, B, N
                 probs_t = inferer(outer_beam_decoder_outputs, t, decoder_mask).view(beam_width, b, -1)

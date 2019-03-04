@@ -180,6 +180,7 @@ class Transformer(nn.Module):
             # first branching
             # get first outer probabilities
             probs_0 = inferer(decoder_output, 0, decoder_mask)
+
             # pick best K of them
             outer_beam_scores, outer_beam_paths = argmax_top_k(probs_0, k=beam_width)
             # embed them, concatenate with sos symbols and reshape for batching
@@ -195,6 +196,8 @@ class Transformer(nn.Module):
             # construct a new inferer for batched beams
             inferer = infer_wrapper(self, encoder_output.repeat(beam_width, 1, 1),
                                     encoder_mask.repeat(beam_width, 1, 1), b * beam_width)
+
+            decoder_mask = decoder_mask.repeat(beam_width, 1, 1)
 
             for t in range(1, n-1):
                 # tensor of shape K, B, N
@@ -256,8 +259,8 @@ def test(device: str):
     encoder_mask = torch.ones(128, sl*2, sl).to(device)
     decoder_input = torch.rand(128, sl * 2, 300).to(device)
     decoder_mask = Mask((128, sl * 2, sl * 2)).to(device)
-    p, s = t.vectorized_beam_search(encoder_input[0:20], encoder_mask[0:20], 0, 1)
+    p, s = t.vectorized_beam_search(encoder_input[0:20], encoder_mask[0:20], 0, 3)
     f_v = t.forward(encoder_input, decoder_input, encoder_mask, decoder_mask)
-    i_v = t.infer(encoder_input[0:20], encoder_mask[0:20], 0)
+    i_v = t.infer(encoder_input[0:20], encoder_mask[0:20, :50], 0)
     import pdb
     pdb.set_trace()
