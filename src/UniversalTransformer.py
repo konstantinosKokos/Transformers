@@ -66,7 +66,7 @@ class UniversalTransformer(nn.Module):
         if reuse_embedding:
             self.predictor = lambda x: x@(self.embedding_matrix.transpose(1, 0) + 1e-10)
         else:
-            self.predictor = nn.Linear(in_features=d_model, out_features=num_classes).to(self.device)        # self.predictor = nn.Linear(in_features=d_model, out_features=num_classes).to(self.device)
+            self.predictor = nn.Linear(in_features=d_model, out_features=num_classes).to(self.device)
         # self.output_embedder = output_embedder
         self.activation = activation
 
@@ -88,6 +88,7 @@ class UniversalTransformer(nn.Module):
 
         with torch.no_grad():
             b, n, dk = encoder_input.shape
+            max_steps = encoder_mask.shape[1]
             encoder_output = self.encoder(EncoderInput(encoder_input, encoder_mask)).encoder_input
             sos_symbols = (torch.ones(b, device=self.device) * sos_symbol).long()
             decoder_output = self.output_embedder(sos_symbols).unsqueeze(1)
@@ -95,7 +96,7 @@ class UniversalTransformer(nn.Module):
             inferer = infer_wrapper(self, encoder_output, encoder_mask, b)
             decoder_mask = Mask((b, encoder_mask.shape[1], encoder_mask.shape[1])).to(self.device)
 
-            for t in range(n):
+            for t in range(max_steps):
                 prob_t = inferer(decoder_output, t, decoder_mask)
                 class_t = prob_t.argmax(dim=-1)
                 emb_t = self.output_embedder(class_t).unsqueeze(1)

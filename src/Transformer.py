@@ -126,15 +126,16 @@ class Transformer(nn.Module):
 
         with torch.no_grad():
             b, n, dk = encoder_input.shape
-            pe = PE(b, n, dk, dk, device=self.device)
-            encoder_output = self.encoder(EncoderInput(encoder_input + pe, encoder_mask[:, :n, :])).encoder_input
+            max_steps = encoder_mask.shape[1]
+            pe = PE(b, max_steps, dk, dk, device=self.device)
+            encoder_output = self.encoder(EncoderInput(encoder_input + pe[:, :n], encoder_mask[:, :n, :])).encoder_input
             sos_symbols = (torch.ones(b) * sos_symbol).long().to(self.device)
             decoder_output = self.output_embedder(sos_symbols).unsqueeze(1) + pe[:, 0:1, :]
             output_probs = torch.Tensor().to(self.device)
             inferer = infer_wrapper(self, encoder_output, encoder_mask, b)
             decoder_mask = Mask((b, encoder_mask.shape[1], encoder_mask.shape[1])).to(self.device)
 
-            for t in range(n):
+            for t in range(max_steps):
                 prob_t = inferer(decoder_output, t, decoder_mask)
                 class_t = prob_t.argmax(dim=-1)
                 emb_t = self.output_embedder(class_t).unsqueeze(1) + pe[:, t + 1:t + 2, :]
