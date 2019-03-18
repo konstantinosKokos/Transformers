@@ -85,17 +85,17 @@ def Decoder(num_layers: int, num_heads: int, d_model: int, d_k: int, d_v: int, d
 
 
 class Transformer(nn.Module):
-    def __init__(self, num_classes: int, encoder_layers: int = 6, num_heads: int = 8,
-                 decoder_layers: int = 6, d_model: int = 300, d_intermediate: int = 128, dropout: float=0.1,
+    def __init__(self, num_classes: int, encoder_heads: int=8, decoder_heads: int=8, encoder_layers: int=6,
+                 decoder_layers: int=6, d_model: int=300, d_intermediate: int=128, dropout: float=0.1,
                  device: str='cpu', activation: Callable[[FloatTensor], FloatTensor]= sigsoftmax,
                  reuse_embedding: bool=True) -> None:
         self.device = device
         super(Transformer, self).__init__()
-        self.encoder = Encoder(num_layers=encoder_layers, num_heads=num_heads, d_model=d_model,
-                               d_k=d_model // num_heads, d_v=d_model // num_heads,
+        self.encoder = Encoder(num_layers=encoder_layers, num_heads=encoder_heads, d_model=d_model,
+                               d_k=d_model // encoder_heads, d_v=d_model // encoder_heads,
                                d_intermediate=d_intermediate, dropout=dropout).to(self.device)
-        self.decoder = Decoder(num_layers=decoder_layers, num_heads=num_heads, d_model=d_model,
-                               d_k=d_model // num_heads, d_v=d_model // num_heads,
+        self.decoder = Decoder(num_layers=decoder_layers, num_heads=decoder_heads, d_model=d_model,
+                               d_k=d_model // decoder_heads, d_v=d_model // decoder_heads,
                                d_intermediate=d_intermediate, dropout=dropout).to(self.device)
         self.embedding_matrix = torch.nn.Parameter(torch.rand(num_classes, d_model, device=device) * 0.02)
         self.output_embedder = lambda x: F.embedding(x, self.embedding_matrix, padding_idx=0, scale_grad_by_freq=True)

@@ -48,17 +48,17 @@ class RecurrentDecoder(nn.Module):
 
 
 class UniversalTransformer(nn.Module):
-    def __init__(self, num_classes: int, encoder_layers: int = 6, num_heads: int = 8, decoder_layers: int = 6,
-                 d_model: int = 300, d_intermediate: int = 1024, dropout: float=0.1, device: str='cpu',
-                 activation: Callable[[FloatTensor], FloatTensor] = sigsoftmax,
+    def __init__(self, num_classes: int, encoder_layers: int=6, encoder_heads: int=8, decoder_heads: int=8,
+                 decoder_layers: int=6, d_model: int=300, d_intermediate: int=1024, dropout: float=0.1,
+                 device: str='cpu', activation: Callable[[FloatTensor], FloatTensor]=sigsoftmax,
                  reuse_embedding: bool=True) -> None:
         self.device = device
         super(UniversalTransformer, self).__init__()
-        self.encoder = RecurrentEncoder(num_steps=encoder_layers, num_heads=num_heads, d_model=d_model,
-                                        d_k=d_model // num_heads, d_v=d_model // num_heads,
+        self.encoder = RecurrentEncoder(num_steps=encoder_layers, num_heads=encoder_heads, d_model=d_model,
+                                        d_k=d_model // encoder_heads, d_v=d_model // encoder_heads,
                                         dropout=dropout, d_intermediate=d_intermediate).to(self.device)
-        self.decoder = RecurrentDecoder(num_steps=decoder_layers, num_heads=num_heads, d_model=d_model,
-                                        d_k=d_model // num_heads, d_v=d_model // num_heads,
+        self.decoder = RecurrentDecoder(num_steps=decoder_layers, num_heads=decoder_heads, d_model=d_model,
+                                        d_k=d_model // decoder_heads, d_v=d_model // decoder_heads,
                                         dropout=dropout, d_intermediate=d_intermediate).to(self.device)
         self.embedding_matrix = torch.nn.Parameter(torch.rand(num_classes, d_model, device=device) * 0.02)
         self.output_embedder = lambda x: torch.nn.functional.embedding(x, self.embedding_matrix, padding_idx=0,
