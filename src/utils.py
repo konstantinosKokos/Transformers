@@ -84,7 +84,6 @@ def PE(b: int, n: int, d_inp: int, d_model: int, freq: int = 10000, device: str=
                          - (math.log(freq) / d_model))
     pe[:, 0::2] = torch.sin(position * div_term)
     pe[:, 1::2] = torch.cos(position * div_term)
-    # return pe.unsqueeze(0).expand(b, n, d_model)
     return pe.repeat(b, 1, 1)
 
 
@@ -158,6 +157,21 @@ def infer_wrapper(transformer: nn.Module, encoder_output: FloatTensor, encoder_m
         Callable[[FloatTensor, int, Optional[LongTensor]], FloatTensor]:
     return lambda decoder_input, t, decoder_mask=None: \
         transformer.infer_one(encoder_output, encoder_mask, decoder_input, t, b, decoder_mask)
+
+
+def batchify_local(tensor: FloatTensor, windows: List[List[range]]) -> Tuple[FloatTensor, Sequence[Tuple[int, range]]]:
+    types, ids = list(zip(*[(tensor[b, r], (b, r)) for b in range(len(windows)) for r in windows[b]]))
+    lens = list(map(lambda x: types[x].shape[0], range(len(ids))))
+    indices = sorted(range(len(ids)), key=lambda x: lens[x])
+    ids = list(map(lambda x: ids[x], indices))
+    types = list(map(lambda x: types[x], indices))
+    return torch.nn.utils.rnn.pad_sequence(types), ids
+
+
+def recover_batch(original: FloatTensor, processed: FloatTensor, ids: Sequence[Tuple[int, range]]) -> FloatTensor:
+    for i, (b, r) in enumerate(ids):
+        original[b, r] = processed[i, 0:len(r)]
+    return original
 
 
 def count_parameters(model: nn.Module) -> int:

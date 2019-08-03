@@ -1,10 +1,3 @@
-from typing import NamedTuple, Optional, Callable, Iterable, Any, Union, Tuple, List, Sequence
-from torch.nn import functional as F
-from torch import nn
-import torch
-import math
-import numpy as np
-
 try:
     from src.utils import *
 except ImportError:
@@ -85,10 +78,10 @@ def Decoder(num_layers: int, num_heads: int, d_model: int, d_k: int, d_v: int, d
 
 
 class Transformer(nn.Module):
-    def __init__(self, num_classes: int, encoder_heads: int=8, decoder_heads: int=8, encoder_layers: int=6,
-                 decoder_layers: int=6, d_model: int=300, d_intermediate: int=128, dropout: float=0.1,
-                 device: str='cpu', activation: Callable[[FloatTensor], FloatTensor]= sigsoftmax,
-                 reuse_embedding: bool=True) -> None:
+    def __init__(self, num_classes: int, encoder_heads: int = 8, decoder_heads: int = 8, encoder_layers: int = 6,
+                 decoder_layers: int = 6, d_model: int = 300, d_intermediate: int = 128, dropout: float = 0.1,
+                 device: str = 'cpu', activation: Callable[[FloatTensor], FloatTensor]= sigsoftmax,
+                 reuse_embedding: bool = True) -> None:
         self.device = device
         super(Transformer, self).__init__()
         self.encoder = Encoder(num_layers=encoder_layers, num_heads=encoder_heads, d_model=d_model,
