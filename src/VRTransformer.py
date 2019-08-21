@@ -102,7 +102,7 @@ class VRTransformer(nn.Module):
             decoder_mask = Mask((b, encoder_mask.shape[1], encoder_mask.shape[1])).to(self.device)
 
             for t in range(max_steps):
-                prob_t = inferer(decoder_output, t, decoder_mask)
+                prob_t = inferer(decoder_output=decoder_output, t=t, decoder_mask=decoder_mask)
 
                 class_t = prob_t.argmax(dim=-1)
                 reset = torch.where(class_t == reset_symbol, torch.ones(1, dtype=torch.uint8).to(self.device),

@@ -96,7 +96,7 @@ class UniversalTransformer(nn.Module):
             decoder_mask = Mask((b, encoder_mask.shape[1], encoder_mask.shape[1])).to(self.device)
 
             for t in range(max_steps):
-                prob_t = inferer(decoder_output, t, decoder_mask)
+                prob_t = inferer(decoder_output=decoder_output, t=t, decoder_mask=decoder_mask)
                 class_t = prob_t.argmax(dim=-1)
                 emb_t = self.output_embedder(class_t).unsqueeze(1)
                 decoder_output = torch.cat([decoder_output, emb_t], dim=1)
@@ -139,7 +139,7 @@ class UniversalTransformer(nn.Module):
 
             # first branching
             # get first outer probabilities
-            probs_0 = inferer(decoder_output, 0, decoder_mask)
+            probs_0 = inferer(decoder_output=decoder_output, t=0, decoder_mask=decoder_mask)
             # pick best K of them
             outer_beam_scores, outer_beam_paths = argmax_top_k(probs_0, k=beam_width)
             # embed them, concatenate with sos symbols and reshape for batching
@@ -156,7 +156,8 @@ class UniversalTransformer(nn.Module):
 
             for t in range(1, n-1):
                 # tensor of shape K, B, N
-                probs_t = inferer(outer_beam_decoder_outputs, t, decoder_mask).view(beam_width, b, -1)
+                probs_t = inferer(decoder_output=outer_beam_decoder_outputs, t=t, decoder_mask=decoder_mask).\
+                    view(beam_width, b, -1)
 
                 # list of K tuples, each containing scores and indices
                 per_beam_top_k = [argmax_top_k(probs_t[i], k=beam_width) for i in range(beam_width)]

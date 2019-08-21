@@ -4,6 +4,7 @@ from torch import nn
 import torch
 import math
 import numpy as np
+from functools import partial
 
 
 FloatTensor = Union[torch.cuda.FloatTensor, torch.FloatTensor]
@@ -155,10 +156,8 @@ class FuzzyLoss(object):
         return self.loss_fn(x, y_float)
 
 
-def infer_wrapper(transformer: nn.Module, encoder_output: FloatTensor, encoder_mask: FloatTensor, b: int) -> \
-        Callable[[FloatTensor, int, Optional[LongTensor]], FloatTensor]:
-    return lambda decoder_input, t, decoder_mask=None: \
-        transformer.infer_one(encoder_output, encoder_mask, decoder_input, t, b, decoder_mask)
+def infer_wrapper(transformer: nn.Module, encoder_output: FloatTensor, encoder_mask: FloatTensor, b: int) -> partial:
+    return partial(transformer.infer_one, encoder_output=encoder_output, encoder_mask=encoder_mask, b=b)
 
 
 def batchify_local(tensor: FloatTensor, windows: Windows) -> Tuple[FloatTensor, Sequence[Tuple[int, range]]]:
