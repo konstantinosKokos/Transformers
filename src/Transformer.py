@@ -80,8 +80,8 @@ def Decoder(num_layers: int, num_heads: int, d_model: int, d_k: int, d_v: int, d
 class Transformer(nn.Module):
     def __init__(self, num_classes: int, encoder_heads: int = 8, decoder_heads: int = 8, encoder_layers: int = 6,
                  decoder_layers: int = 6, d_model: int = 300, d_intermediate: int = 128, dropout: float = 0.1,
-                 device: str = 'cpu', activation: Callable[[FloatTensor], FloatTensor]= sigsoftmax,
-                 reuse_embedding: bool = True) -> None:
+                 device: str = 'cpu', activation: Callable[[FloatTensor], FloatTensor] = sigsoftmax,
+                 reuse_embedding: bool = True, predictor: Optional[nn.Module] = None) -> None:
         self.device = device
         super(Transformer, self).__init__()
         self.encoder = Encoder(num_layers=encoder_layers, num_heads=encoder_heads, d_model=d_model,
@@ -94,6 +94,8 @@ class Transformer(nn.Module):
         self.output_embedder = lambda x: F.embedding(x, self.embedding_matrix, padding_idx=0, scale_grad_by_freq=True)
         if reuse_embedding:
             self.predictor = lambda x: x@(self.embedding_matrix.transpose(1, 0) + 1e-10)
+        elif predictor is not None:
+            self.predictor = predictor
         else:
             self.predictor = nn.Linear(in_features=d_model, out_features=num_classes).to(self.device)
 
@@ -251,7 +253,7 @@ def test(device: str):
     t = Transformer(12, device=device)
     encoder_input = torch.rand(128, sl, 300).to(device)
     encoder_mask = torch.ones(128, sl*2, sl).to(device)
-    decoder_input = torch.rand(128, sl * 2, 300).to(device)
+    decoder_input = torch.rand(128, sl*2, 300).to(device)
     decoder_mask = Mask((128, sl * 2, sl * 2)).to(device)
     p, s = t.vectorized_beam_search(encoder_input[0:20], encoder_mask[0:20], 0, 3)
     f_v = t.forward(encoder_input, decoder_input, encoder_mask, decoder_mask)
