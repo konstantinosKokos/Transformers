@@ -18,11 +18,13 @@ DecoderInput = NamedTuple('DecoderInput', [('encoder_output', FloatTensor),
                                            ('decoder_input', FloatTensor),
                                            ('encoder_mask', Optional[LongTensor]),
                                            ('decoder_mask', LongTensor)])
-
+Window = Sequence[range]
+Windows = Sequence[Window]
 
 #########################################################################################
 # # # # # # # # # # # # # # # # # # # # # UTILS # # # # # # # # # # # # # # # # # # # # #
 #########################################################################################
+
 
 class gelu(nn.Module):
     def __init__(self):
@@ -159,12 +161,8 @@ def infer_wrapper(transformer: nn.Module, encoder_output: FloatTensor, encoder_m
         transformer.infer_one(encoder_output, encoder_mask, decoder_input, t, b, decoder_mask)
 
 
-def batchify_local(tensor: FloatTensor, windows: List[List[range]]) -> Tuple[FloatTensor, Sequence[Tuple[int, range]]]:
+def batchify_local(tensor: FloatTensor, windows: Windows) -> Tuple[FloatTensor, Sequence[Tuple[int, range]]]:
     types, ids = list(zip(*[(tensor[b, r], (b, r)) for b in range(len(windows)) for r in windows[b]]))
-    # lens = list(map(lambda x: types[x].shape[0], range(len(ids))))
-    # indices = sorted(range(len(ids)), key=lambda x: lens[x])
-    # ids = list(map(lambda x: ids[x], indices))
-    # types = list(map(lambda x: types[x], indices))
     return torch.nn.utils.rnn.pad_sequence(types), ids
 
 
