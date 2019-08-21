@@ -1,31 +1,31 @@
-"""
-Variable length R-Transformer.
+# Variable length R-Transformer.
 
-A variant of the standard R-Transformer, where a bounded window recurrence is applied over the decoder output.
-During training, the window lengths need to be given a priori, enabling batching over the localist RNN.
-During inference, the recurrence is iterated over the generated output, and is reset whenever a pre-specified output
-    symbol is generated.
+# A variant of the standard R-Transformer, where a bounded window recurrence of variable length is applied over the
+# decoder output. Useful in cases of translating to a locally structured space.
 
-This content is provided under GNU General Public License.
-If you find this architecture useful to your experiments, please cite:
+# During training, the window lengths need to be given a priori, enabling batching over the localist RNN.
+# During inference, the recurrence is iterated over the generated output, and is reset whenever a pre-specified output
+#     symbol is generated.
+#
+# This content is provided under GNU General Public License.
+# If you find this architecture useful to your experiments, please cite:
+#
+#     @misc{VRTransformer,
+#         author = {Kogkalidis, Konstantinos},
+#         title = {Variable length R-Transformers},
+#         year = {2019},
+#         publisher = {GitHub},
+#         journal = {GitHub repository},
+#         howpublished = {\url{https://github.com/konstantinosKokos/Transformers}},
+#     }
 
-    @misc{VRTransformer,
-        author = {Kogkalidis, Konstantinos},
-        title = {Variable length R-Transformers},
-        year = {2019},
-        publisher = {GitHub},
-        journal = {GitHub repository},
-        howpublished = {\url{https://github.com/konstantinosKokos/Transformers}},
-    }
-
-"""
 
 try:
     from src.utils import *
     from src.Transformer import EncoderLayer, DecoderLayer, Encoder, Decoder
 except ImportError:
-    from Transformer.src.utils import *
-    from Transformer.src.Transformer import EncoderLayer, DecoderLayer, Encoder, Decoder
+    from Transformers.src.utils import *
+    from Transformers.src.Transformer import EncoderLayer, DecoderLayer, Encoder, Decoder
 
 
 class VRTransformer(nn.Module):

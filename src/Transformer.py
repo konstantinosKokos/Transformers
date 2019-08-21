@@ -1,7 +1,7 @@
 try:
     from src.utils import *
 except ImportError:
-    from Transformer.src.utils import *
+    from Transformers.src.utils import *
 
 
 class EncoderLayer(nn.Module):

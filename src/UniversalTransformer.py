@@ -6,8 +6,8 @@ try:
     from src.utils import *
     from src.Transformer import EncoderLayer, DecoderLayer
 except ImportError:
-    from Transformer.src.utils import *
-    from Transformer.src.Transformer import EncoderLayer, DecoderLayer
+    from Transformers.src.utils import *
+    from Transformers.src.Transformer import EncoderLayer, DecoderLayer
 
 
 class RecurrentEncoder(nn.Module):
