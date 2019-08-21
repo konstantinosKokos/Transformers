@@ -6,6 +6,18 @@ During training, the window lengths need to be given a priori, enabling batching
 During inference, the recurrence is iterated over the generated output, and is reset whenever a pre-specified output
     symbol is generated.
 
+This content is provided under GNU General Public License.
+If you find this architecture useful to your experiments, please cite:
+
+    @misc{VRTransformer,
+        author = {Kogkalidis, Konstantinos},
+        title = {Variable length R-Transformers},
+        year = {2019},
+        publisher = {GitHub},
+        journal = {GitHub repository},
+        howpublished = {\url{https://github.com/konstantinosKokos/Transformers}},
+    }
+
 """
 
 try:
