@@ -10,7 +10,7 @@ Currently includes:
 A few utility functions are taken from [The Annotated Transformer](http://nlp.seas.harvard.edu/2018/04/03/attention.html) 
 tutorial. Important additions, aside the implementation of the Universal Transformer, include PEP-484 style type annotations, more efficient vectorization, and a batch-vectorized implementation of beam search decoding. 
 
-*Note that as of version 1.2 PyTorch provides implementations of core transformer modules.*
+*Note that as of version 1.2 PyTorch provides implementations of the vanilla transformer and its core modules.*
 
 The code has been tested in various generalized translation tasks where it performs consistently and yields high scores with minimal training times. 
 
