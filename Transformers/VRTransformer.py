@@ -20,18 +20,14 @@
 #     }
 
 
-try:
-    from src.utils import *
-    from src.Transformer import EncoderLayer, DecoderLayer, Encoder, Decoder
-except ImportError:
-    from Transformers.src.utils import *
-    from Transformers.src.Transformer import EncoderLayer, DecoderLayer, Encoder, Decoder
+from Transformers.utils import *
+from Transformers.Transformer import EncoderLayer, DecoderLayer, Encoder, Decoder
 
 
 class VRTransformer(nn.Module):
     def __init__(self, num_classes: int, encoder_heads: int = 8, decoder_heads: int = 8, encoder_layers: int = 6,
                  decoder_layers: int = 6, d_model: int = 300, d_intermediate: int = 128, dropout: float = 0.1,
-                 device: str = 'cpu', activation: Callable[[FloatTensor], FloatTensor] = sigsoftmax,
+                 device: str = 'cpu', activation: Callable[[Tensor], Tensor] = sigsoftmax,
                  reuse_embedding: bool = True, predictor: Optional[nn.Module] = None,
                  recurrence: Optional[nn.Module] = None) -> None:
 
@@ -62,8 +58,8 @@ class VRTransformer(nn.Module):
 
         self.activation = activation
 
-    def forward(self, encoder_input: FloatTensor, decoder_input: FloatTensor, encoder_mask: LongTensor,
-                decoder_mask: LongTensor, windows: Windows) -> FloatTensor:
+    def forward(self, encoder_input: Tensor, decoder_input: Tensor, encoder_mask: LongTensor,
+                decoder_mask: LongTensor, windows: Windows) -> Tensor:
         self.train()
 
         b, n, dk = encoder_input.shape
@@ -83,8 +79,8 @@ class VRTransformer(nn.Module):
         prediction = self.predictor(decoder_output.decoder_input)
         return torch.log(self.activation(prediction))
 
-    def infer(self, encoder_input: FloatTensor, encoder_mask: LongTensor, sos_symbol: int, reset_symbol: int) \
-            -> FloatTensor:
+    def infer(self, encoder_input: Tensor, encoder_mask: LongTensor, sos_symbol: int, reset_symbol: int) \
+            -> Tensor:
         self.eval()
 
         with torch.no_grad():
@@ -99,7 +95,7 @@ class VRTransformer(nn.Module):
 
             output_probs = torch.Tensor().to(self.device)
             inferer = infer_wrapper(self, encoder_output, encoder_mask, b)
-            decoder_mask = Mask((b, encoder_mask.shape[1], encoder_mask.shape[1])).to(self.device)
+            decoder_mask = make_mask((b, encoder_mask.shape[1], encoder_mask.shape[1])).to(self.device)
 
             for t in range(max_steps):
                 prob_t = inferer(decoder_output=decoder_output, t=t, decoder_mask=decoder_mask)
@@ -119,10 +115,10 @@ class VRTransformer(nn.Module):
 
         return output_probs
 
-    def infer_one(self, encoder_output: FloatTensor, encoder_mask: LongTensor, decoder_output: FloatTensor,
-                  t: int, b: int, decoder_mask: Optional[LongTensor] = None) -> FloatTensor:
+    def infer_one(self, encoder_output: Tensor, encoder_mask: LongTensor, decoder_output: Tensor,
+                  t: int, b: int, decoder_mask: Optional[LongTensor] = None) -> Tensor:
         if decoder_mask is None:
-            decoder_mask = Mask((b, t+1, t+1)).to(self.device)
+            decoder_mask = make_mask((b, t + 1, t + 1)).to(self.device)
         decoder_step = self.decoder(DecoderInput(encoder_output=encoder_output, encoder_mask=encoder_mask,
                                                  decoder_input=decoder_output,
                                                  decoder_mask=decoder_mask[:, :t+1, :t+1])).decoder_input
@@ -153,7 +149,7 @@ def test(device: str):
     encoder_input = torch.rand(b, sl, 300).to(device)
     encoder_mask = torch.ones(b, sl*2, sl).to(device)
     decoder_input = torch.rand(b, sl * 2, 300).to(device)
-    decoder_mask = Mask((b, sl * 2, sl * 2)).to(device)
+    decoder_mask = make_mask((b, sl * 2, sl * 2)).to(device)
     # p, s = t.vectorized_beam_search(encoder_input[0:20], encoder_mask[0:20], 0, 3)
     f_v = t.forward(encoder_input, decoder_input, encoder_mask, decoder_mask, windows)
     i_v = t.infer(encoder_input[0:20], encoder_mask[0:20, :50], 0, 0)

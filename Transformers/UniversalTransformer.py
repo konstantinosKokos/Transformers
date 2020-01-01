@@ -2,12 +2,8 @@ from typing import NamedTuple, Optional, Callable, Iterable, Any, Union, Tuple, 
 from torch.nn import functional as F
 from torch import nn
 
-try:
-    from src.utils import *
-    from src.Transformer import EncoderLayer, DecoderLayer
-except ImportError:
-    from Transformers.src.utils import *
-    from Transformers.src.Transformer import EncoderLayer, DecoderLayer
+from Transformers.utils import *
+from Transformers.Transformer import EncoderLayer, DecoderLayer
 
 
 class RecurrentEncoder(nn.Module):
@@ -47,7 +43,7 @@ class RecurrentDecoder(nn.Module):
 class UniversalTransformer(nn.Module):
     def __init__(self, num_classes: int, encoder_layers: int = 6, encoder_heads: int = 8, decoder_heads: int = 8,
                  decoder_layers: int = 6, d_model: int = 300, d_intermediate: int = 1024, dropout: float = 0.1,
-                 device: str = 'cpu', activation: Callable[[FloatTensor], FloatTensor] = sigsoftmax,
+                 device: str = 'cpu', activation: Callable[[Tensor], Tensor] = sigsoftmax,
                  reuse_embedding: bool = True, predictor: Optional[nn.Module] = None) -> None:
         self.device = device
         super(UniversalTransformer, self).__init__()
@@ -69,8 +65,8 @@ class UniversalTransformer(nn.Module):
 
         self.activation = activation
 
-    def forward(self, encoder_input: FloatTensor, decoder_input: FloatTensor, encoder_mask: LongTensor,
-                decoder_mask: LongTensor) -> FloatTensor:
+    def forward(self, encoder_input: Tensor, decoder_input: Tensor, encoder_mask: LongTensor,
+                decoder_mask: LongTensor) -> Tensor:
         self.train()
 
         encoder_output = self.encoder(EncoderInput(encoder_input=encoder_input,
@@ -82,7 +78,7 @@ class UniversalTransformer(nn.Module):
         prediction = self.predictor(decoder_output.decoder_input)
         return torch.log(self.activation(prediction))
 
-    def infer(self, encoder_input: FloatTensor, encoder_mask: LongTensor, sos_symbol: int) -> FloatTensor:
+    def infer(self, encoder_input: Tensor, encoder_mask: LongTensor, sos_symbol: int) -> Tensor:
         self.eval()
 
         with torch.no_grad():
@@ -93,7 +89,7 @@ class UniversalTransformer(nn.Module):
             decoder_output = self.output_embedder(sos_symbols).unsqueeze(1)
             output_probs = torch.Tensor().to(self.device)
             inferer = infer_wrapper(self, encoder_output, encoder_mask, b)
-            decoder_mask = Mask((b, encoder_mask.shape[1], encoder_mask.shape[1])).to(self.device)
+            decoder_mask = make_mask((b, encoder_mask.shape[1], encoder_mask.shape[1])).to(self.device)
 
             for t in range(max_steps):
                 prob_t = inferer(decoder_output=decoder_output, t=t, decoder_mask=decoder_mask)
@@ -103,10 +99,10 @@ class UniversalTransformer(nn.Module):
                 output_probs = torch.cat([output_probs, prob_t.unsqueeze(1)], dim=1)
         return output_probs
 
-    def infer_one(self, encoder_output: FloatTensor, encoder_mask: LongTensor, decoder_output: FloatTensor,
-                  t: int, b: int, decoder_mask: Optional[LongTensor]=None) -> FloatTensor:
+    def infer_one(self, encoder_output: Tensor, encoder_mask: LongTensor, decoder_output: Tensor,
+                  t: int, b: int, decoder_mask: Optional[LongTensor] = None) -> Tensor:
         if decoder_mask is None:
-            decoder_mask = Mask((b, t+1, t+1)).to(self.device)
+            decoder_mask = make_mask((b, t + 1, t + 1)).to(self.device)
         decoder_step = self.decoder(DecoderInput(encoder_output=encoder_output, encoder_mask=encoder_mask,
                                                  decoder_input=decoder_output,
                                                  decoder_mask=decoder_mask[:, :t+1, :t+1])).decoder_input
@@ -114,7 +110,7 @@ class UniversalTransformer(nn.Module):
         prob_t = self.predictor(decoder_step[:, -1])
         return self.activation(prob_t)  # b, num_classes
 
-    def vectorized_beam_search(self, encoder_input: FloatTensor, encoder_mask: LongTensor, sos_symbol: int,
+    def vectorized_beam_search(self, encoder_input: Tensor, encoder_mask: LongTensor, sos_symbol: int,
                                beam_width: int):
         self.eval()
 
@@ -132,7 +128,7 @@ class UniversalTransformer(nn.Module):
             # tensor of shape B, 1, F
             decoder_output = self.output_embedder(sos_symbols).unsqueeze(1)
 
-            decoder_mask = Mask((b, encoder_mask.shape[1], encoder_mask.shape[1])).to(self.device)
+            decoder_mask = make_mask((b, encoder_mask.shape[1], encoder_mask.shape[1])).to(self.device)
 
             # construct first inferer for single batch
             inferer = infer_wrapper(self, encoder_output, encoder_mask, b)
@@ -141,7 +137,7 @@ class UniversalTransformer(nn.Module):
             # get first outer probabilities
             probs_0 = inferer(decoder_output=decoder_output, t=0, decoder_mask=decoder_mask)
             # pick best K of them
-            outer_beam_scores, outer_beam_paths = argmax_top_k(probs_0, k=beam_width)
+            outer_beam_scores, outer_beam_paths = torch.topk(probs_0, k=beam_width, dim=-1)
             # embed them, concatenate with sos symbols and reshape for batching
             outer_beam_decoder_outputs = torch.cat((decoder_output.repeat(beam_width, 1, 1),
                                                     self.output_embedder(outer_beam_paths).view(beam_width*b, 1, dk)),
@@ -160,7 +156,7 @@ class UniversalTransformer(nn.Module):
                     view(beam_width, b, -1)
 
                 # list of K tuples, each containing scores and indices
-                per_beam_top_k = [argmax_top_k(probs_t[i], k=beam_width) for i in range(beam_width)]
+                per_beam_top_k = [torch.topk(probs_t[i], k=beam_width, dim=-1) for i in range(beam_width)]
 
                 # tensor of shape K0, K1, B, where K0 indexes the source and K1 indexes the gen
                 per_beam_scores = torch.cat([x[0].unsqueeze(0) for x in per_beam_top_k])
@@ -176,7 +172,7 @@ class UniversalTransformer(nn.Module):
                 # tensor of shape K^2, B -> B, K^2
                 per_beam_scores = per_beam_scores.view(beam_width ** 2, b).transpose(1, 0)
                 # tensors of shape K, B
-                outer_beam_scores, outer_beam_indices = argmax_top_k(per_beam_scores, k=beam_width)
+                outer_beam_scores, outer_beam_indices = torch.topk(per_beam_scores, k=beam_width, dim=-1)
 
                 square_indices = [list(map(backward_index, x)) for x in outer_beam_indices.tolist()]
 
@@ -213,7 +209,7 @@ def test(device: str):
     encoder_input = torch.rand(128, sl, 300).to(device)
     encoder_mask = torch.ones(128, sl * 2, sl).to(device)
     decoder_input = torch.rand(128, sl * 2, 300).to(device)
-    decoder_mask = Mask((128, sl*2, sl*2)).to(device)
+    decoder_mask = make_mask((128, sl * 2, sl * 2)).to(device)
     paths, scores = t.vectorized_beam_search(encoder_input[:5], encoder_mask[:5], 0, 3)
     f_v = t.forward(encoder_input, decoder_input, encoder_mask, decoder_mask)
     i_v = t.infer(encoder_input, encoder_mask, 0)

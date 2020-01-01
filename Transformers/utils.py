@@ -1,22 +1,20 @@
 from typing import NamedTuple, Optional, Callable, Iterable, Any, Union, Tuple, List, Sequence
 from torch.nn import functional as F
-from torch import nn
+from torch import nn, Tensor, LongTensor
+from torch.nn import ModuleList
 import torch
 import math
 import numpy as np
 from functools import partial
 
 
-FloatTensor = Union[torch.cuda.FloatTensor, torch.FloatTensor]
-LongTensor = Union[torch.cuda.LongTensor, torch.LongTensor]
-Tensor = Union[FloatTensor, LongTensor]
 tensor_map = Callable[[Any], Tensor]
 tensor_maps = Iterable[tensor_map]
 
-EncoderInput = NamedTuple('EncoderInput', [('encoder_input', FloatTensor),
+EncoderInput = NamedTuple('EncoderInput', [('encoder_input', Tensor),
                                            ('mask', Optional[LongTensor])])
-DecoderInput = NamedTuple('DecoderInput', [('encoder_output', FloatTensor),
-                                           ('decoder_input', FloatTensor),
+DecoderInput = NamedTuple('DecoderInput', [('encoder_output', Tensor),
+                                           ('decoder_input', Tensor),
                                            ('encoder_mask', Optional[LongTensor]),
                                            ('decoder_mask', LongTensor)])
 Window = Sequence[range]
@@ -27,40 +25,27 @@ Windows = Sequence[Window]
 #########################################################################################
 
 
-class gelu(nn.Module):
+class GELU(nn.Module):
     def __init__(self):
-        super(gelu, self).__init__()
+        super(GELU, self).__init__()
 
-    def forward(self, x: FloatTensor):
+    def forward(self, x: Tensor):
         return gelu_fn(x)
 
 
-def gelu_fn(x: FloatTensor) -> FloatTensor:
+def gelu_fn(x: Tensor) -> Tensor:
     return 0.5 * x * (1 + torch.tanh(0.7978845608028654*(x+0.044715*x**3)))
 
 
-def sigsoftmax(x: FloatTensor) -> FloatTensor:
+def sigsoftmax(x: Tensor) -> Tensor:
     sigx = torch.sigmoid(x) * torch.exp(x)
     rank = len(sigx.shape)
     norm = torch.sum(sigx, dim=-1).unsqueeze(-1).repeat([1 for _ in range(rank-1)] + [sigx.shape[-1]])
     return sigx/norm
 
 
-def argmax_top_k(x: FloatTensor, k: int) -> Tuple[LongTensor, FloatTensor]:
-    copy = x.clone().detach().requires_grad_(False)
-    retv, reti = [], []
-    for repeat in range(k):
-        values, indices = torch.max(copy, dim=-1)
-        mask = torch.arange(x.size(-1), device=x.device).reshape(1, -1) == indices.unsqueeze(-1)
-        copy[mask] = -float('inf')
-        retv.append(values)
-        reti.append(indices)
-    retv, reti = torch.stack(retv), torch.stack(reti)
-    return retv, reti
-
-
-def ScaledDotProduct(queries: FloatTensor, keys: FloatTensor, values: FloatTensor,
-                     mask: Optional[LongTensor] = None) -> FloatTensor:
+def ScaledDotProduct(queries: Tensor, keys: Tensor, values: Tensor,
+                     mask: Optional[LongTensor] = None) -> Tensor:
     dk = keys.shape[-1]
     weights = torch.bmm(queries, keys.transpose(2, 1)) / math.sqrt(dk)  # [B, M, N]
     if mask is not None:
@@ -69,9 +54,9 @@ def ScaledDotProduct(queries: FloatTensor, keys: FloatTensor, values: FloatTenso
     return torch.bmm(weights, values)
 
 
-def MultiHeadAttentionFn(queries: FloatTensor, keys: FloatTensor, values: FloatTensor,
-                         qts: tensor_maps, kts: tensor_maps, vts: tensor_maps, wo: tensor_map,
-                         mask: Optional[LongTensor] = None) -> FloatTensor:
+def MultiHeadAttentionFn(queries: Tensor, keys: Tensor, values: Tensor,
+                         qts: ModuleList, kts: ModuleList, vts: ModuleList, wo: tensor_map,
+                         mask: Optional[LongTensor] = None) -> Tensor:
     qs = [qt(queries) for qt in qts]
     ks = [kt(keys) for kt in kts]
     vs = [vt(values) for vt in vts]
@@ -80,7 +65,7 @@ def MultiHeadAttentionFn(queries: FloatTensor, keys: FloatTensor, values: FloatT
     return wo(outputs)
 
 
-def PE(b: int, n: int, d_inp: int, d_model: int, freq: int = 10000, device: str='cpu') -> FloatTensor:
+def PE(b: int, n: int, d_inp: int, d_model: int, freq: int = 10000, device: str='cpu') -> Tensor:
     pe = torch.zeros(n, d_model, device=device)
     position = torch.arange(0, n, device=device, dtype=torch.float).unsqueeze(1)
     div_term = torch.exp(torch.arange(0, d_inp, 2, device=device, dtype=torch.float) *
@@ -90,7 +75,7 @@ def PE(b: int, n: int, d_inp: int, d_model: int, freq: int = 10000, device: str=
     return pe.repeat(b, 1, 1)
 
 
-def PT(b: int, t: int, n: int, d_inp: int, d_model: int, freq: int = 10000, device: str='cpu') -> FloatTensor:
+def PT(b: int, t: int, n: int, d_inp: int, d_model: int, freq: int = 10000, device: str = 'cpu') -> Tensor:
     pe = torch.zeros(n, d_model, device=device)
     position = torch.arange(0, n, device=device, dtype=torch.float).unsqueeze(1)
     div_term = torch.exp(torch.arange(0, d_inp, 2, device=device, dtype=torch.float) *
@@ -105,9 +90,8 @@ def PT(b: int, t: int, n: int, d_inp: int, d_model: int, freq: int = 10000, devi
     return pe.unsqueeze(1).expand(t, b, n, d_model)
 
 
-def Mask(size: Union[Tuple[int, int], Tuple[int, int, int]]) -> LongTensor:
-    mask = np.triu(np.ones(size), k=1)
-    return torch.from_numpy(mask) == 0
+def make_mask(size: Union[Tuple[int, int], Tuple[int, int, int]]) -> Tensor:
+    return torch.triu(torch.ones(size), diagonal=1)
 
 
 class CustomLRScheduler(object):
@@ -135,19 +119,19 @@ class CustomLRScheduler(object):
         return [update_fn(step, **kwargs) for update_fn in self.update_fns]
 
 
-def noam_scheme(_step: int, d_model: int, warmup_steps: int, batch_size: int=2048) -> float:
+def noam_scheme(_step: int, d_model: int, warmup_steps: int, batch_size: int = 2048) -> float:
     return d_model**-0.5 * min(_step**-0.5, _step*warmup_steps**-1.5) * batch_size/2048
 
 
 class FuzzyLoss(object):
-    def __init__(self, loss_fn: Callable[[FloatTensor, FloatTensor], FloatTensor], num_classes: int,
-                 mass_redistribution: float, ignore_index: int=0) -> None:
+    def __init__(self, loss_fn: Callable[[Tensor, Tensor], Tensor], num_classes: int,
+                 mass_redistribution: float, ignore_index: int = 0) -> None:
         self.loss_fn = loss_fn
         self.nc = num_classes
         self.mass_redistribution = mass_redistribution
         self.ignore_idx = ignore_index
 
-    def __call__(self, x: FloatTensor, y: LongTensor) -> FloatTensor:
+    def __call__(self, x: Tensor, y: LongTensor) -> Tensor:
         y_float = torch.zeros(x.shape[0], self.nc, x.shape[2], device=x.device, dtype=torch.float)
         y_float.fill_(self.mass_redistribution / (self.nc - 1))
         y_float.scatter_(1, y.unsqueeze(1), 1 - self.mass_redistribution)
@@ -156,16 +140,16 @@ class FuzzyLoss(object):
         return self.loss_fn(x, y_float)
 
 
-def infer_wrapper(transformer: nn.Module, encoder_output: FloatTensor, encoder_mask: FloatTensor, b: int) -> partial:
+def infer_wrapper(transformer: nn.Module, encoder_output: Tensor, encoder_mask: Tensor, b: int) -> partial:
     return partial(transformer.infer_one, encoder_output=encoder_output, encoder_mask=encoder_mask, b=b)
 
 
-def batchify_local(tensor: FloatTensor, windows: Windows) -> Tuple[FloatTensor, Sequence[Tuple[int, range]]]:
+def batchify_local(tensor: Tensor, windows: Windows) -> Tuple[Tensor, Sequence[Tuple[int, range]]]:
     types, ids = list(zip(*[(tensor[b, r], (b, r)) for b in range(len(windows)) for r in windows[b]]))
     return torch.nn.utils.rnn.pad_sequence(types), ids
 
 
-def recover_batch(original: FloatTensor, processed: FloatTensor, ids: Sequence[Tuple[int, range]]) -> FloatTensor:
+def recover_batch(original: Tensor, processed: Tensor, ids: Sequence[Tuple[int, range]]) -> Tensor:
     for i, (b, r) in enumerate(ids):
         original[b, r] = processed[0:len(r), i]
     return original
@@ -199,8 +183,8 @@ class MultiHeadAttention(nn.Module):
                                                 for _ in range(num_heads)])
         self.Wo = nn.Linear(in_features=num_heads * d_v, out_features=d_model, bias=False)
 
-    def forward(self, queries: FloatTensor, keys: FloatTensor, values: FloatTensor,
-                mask: Optional[LongTensor] = None) -> FloatTensor:
+    def forward(self, queries: Tensor, keys: Tensor, values: Tensor,
+                mask: Optional[LongTensor] = None) -> Tensor:
         return MultiHeadAttentionFn(queries, keys, values, self.q_transformations, self.k_transformations,
                                     self.v_transformations, self.Wo, mask)
 
@@ -210,9 +194,9 @@ class FFN(nn.Module):
         super(FFN, self).__init__()
         self.network = nn.Sequential(
             nn.Linear(in_features=d_model, out_features=d_intermediate),
-            gelu(),
+            GELU(),
             nn.Linear(in_features=d_intermediate, out_features=d_model)
         )
 
-    def forward(self, x: FloatTensor) -> FloatTensor:
+    def forward(self, x: Tensor) -> Tensor:
         return self.network(x)
