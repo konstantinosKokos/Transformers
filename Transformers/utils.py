@@ -91,7 +91,7 @@ def PT(b: int, t: int, n: int, d_inp: int, d_model: int, freq: int = 10000, devi
 
 
 def make_mask(size: Union[Tuple[int, int], Tuple[int, int, int]]) -> Tensor:
-    return torch.triu(torch.ones(size), diagonal=1)
+    return torch.ones(size) - torch.triu(torch.ones(size), diagonal=1)
 
 
 class CustomLRScheduler(object):
