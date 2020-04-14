@@ -15,7 +15,7 @@ class RecurrentEncoder(nn.Module):
 
     def forward(self, x: EncoderInput) -> EncoderInput:
         b, n, dk = x.encoder_input.shape
-        pt = PT(b, self.num_repeats, n, dk, dk, device=x.encoder_input.device)
+        pt = make_spatiotemporal_encodings(b, self.num_repeats, n, dk, dk, device=x.encoder_input.device)
         for i in range(self.num_repeats):
             x = self.layer(EncoderInput(encoder_input=x.encoder_input + pt[i],
                                         mask=x.mask[:, :n]))
@@ -31,7 +31,7 @@ class RecurrentDecoder(nn.Module):
 
     def forward(self, x: DecoderInput) -> DecoderInput:
         b, n, dk = x.decoder_input.shape
-        pt = PT(b, self.num_repeats, n, dk, dk, device=x.encoder_output.device)
+        pt = make_spatiotemporal_encodings(b, self.num_repeats, n, dk, dk, device=x.encoder_output.device)
         for i in range(self.num_repeats):
             x = self.layer(DecoderInput(decoder_input=x.decoder_input + pt[i],
                                         encoder_output=x.encoder_output,

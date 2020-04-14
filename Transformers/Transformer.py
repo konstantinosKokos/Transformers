@@ -1,77 +1,86 @@
 from Transformers.utils import *
 
 
-class EncoderLayer(nn.Module):
-    def __init__(self, num_heads: int, d_model: int, d_k: int, d_v: int, d_intermediate: int, dropout: float) -> None:
-        super(EncoderLayer, self).__init__()
-        self.dropout_rate = dropout
-        self.mha = MultiHeadAttention(num_heads, d_model, d_k, d_v)
-        self.ffn = FFN(d_intermediate, d_model)
-        self.ln_mha = nn.LayerNorm(normalized_shape=d_model)
-        self.ln_ffn = nn.LayerNorm(normalized_shape=d_model)
-
-    def forward(self, x: EncoderInput) -> EncoderInput:
-        n_in = x.encoder_input.shape[1]
-        x_drop = F.dropout(x.encoder_input, p=self.dropout_rate, training=self.training)
-        mha_x = self.mha(x_drop, x_drop, x_drop, x.mask[:, :n_in])
-        mha_x = F.dropout(mha_x, p=self.dropout_rate, training=self.training)
-        mha_x = mha_x + x_drop
-        mha_x = self.ln_mha(mha_x)
-
-        ffn_x = self.ffn(mha_x)
-        ffn_x = F.dropout(ffn_x, p=self.dropout_rate, training=self.training)
-        ffn_x = ffn_x + mha_x
-        ffn_x = self.ln_ffn(ffn_x)
-        return EncoderInput(encoder_input=ffn_x, mask=x.mask)
-
-
-def Encoder(num_layers: int, num_heads: int, d_model: int, d_k: int, d_v: int, d_intermediate: int, dropout: float=0.1)\
-        -> nn.Sequential:
-    layers = [EncoderLayer(num_heads, d_model, d_k, d_v, d_intermediate, dropout) for _
-              in range(num_layers)]
-    return nn.Sequential(*layers)
-
-
-class DecoderLayer(nn.Module):
-    def __init__(self, num_heads: int, d_model: int, d_k: int, d_v: int, d_intermediate: int, dropout: float) \
+class EncoderLayer(Module):
+    def __init__(self, num_heads: int, d_model: int, d_atn: int, d_v: int, d_intermediate: int, dropout_rate: float) \
             -> None:
-        super(DecoderLayer, self).__init__()
-        self.dropout_rate = dropout
-        self.mask_mha = MultiHeadAttention(num_heads, d_model, d_k, d_v)
-        self.mha = MultiHeadAttention(num_heads, d_model, d_k, d_v)
-        self.ffn = FFN(d_intermediate, d_model)
-        self.ln_m_mha = nn.LayerNorm(normalized_shape=d_model)
-        self.ln_mha = nn.LayerNorm(normalized_shape=d_model)
-        self.ln_ffn = nn.LayerNorm(normalized_shape=d_model)
+        super(EncoderLayer, self).__init__()
+        self.dropout_rate = dropout_rate
+        self.mha = MultiHeadAttention(num_heads,
+                                      d_q_in=d_model, d_k_in=d_model, d_v_in=d_model, d_atn=d_atn, d_v=d_v,
+                                      d_out=d_model, dropout_rate=dropout_rate)
+        self.ffn = FFN(d_intermediate=d_intermediate, d_model=d_model)
+        self.ln_mha = LayerNorm(normalized_shape=d_model)
+        self.ln_ffn = LayerNorm(normalized_shape=d_model)
+        self.dropout = Dropout(dropout_rate)
 
-    def forward(self, x: DecoderInput) -> DecoderInput:
-        t = x.decoder_input.shape[1]
-        x_drop = F.dropout(x.decoder_input, p=self.dropout_rate, training=self.training)
-        m_mha_x = self.mask_mha(x_drop, x_drop, x_drop, x.decoder_mask)
-        m_mha_x = F.dropout(m_mha_x, p=self.dropout_rate, training=self.training)
-        m_mha_x = m_mha_x + x_drop
-        m_mha_x = self.ln_m_mha(m_mha_x)
+    def forward(self, inps: EncoderInput) -> EncoderInput:
+        encoder_input, encoder_mask = inps
 
-        mha_x = self.mha(m_mha_x, x.encoder_output, x.encoder_output, x.encoder_mask[:, :t, :])
-        mha_x = F.dropout(mha_x, p=self.dropout_rate, training=self.training)
-        mha_x = mha_x + m_mha_x
+        encoder_input = self.dropout(encoder_input)
+        mha_x = self.mha(encoder_input, encoder_input, encoder_input, encoder_mask)
+        mha_x = self.dropout(mha_x)
+        mha_x = encoder_input + mha_x
         mha_x = self.ln_mha(mha_x)
 
         ffn_x = self.ffn(mha_x)
-        ffn_x = F.dropout(ffn_x, p=self.dropout_rate, training=self.training)
+        ffn_x = self.dropout(ffn_x)
         ffn_x = ffn_x + mha_x
         ffn_x = self.ln_ffn(ffn_x)
-
-        return DecoderInput(encoder_output=x.encoder_output,
-                            decoder_input=ffn_x,
-                            decoder_mask=x.decoder_mask,
-                            encoder_mask=x.encoder_mask)
+        return EncoderInput(encoder_input=ffn_x, encoder_mask=encoder_mask)
 
 
-def Decoder(num_layers: int, num_heads: int, d_model: int, d_k: int, d_v: int, d_intermediate: int,
-            dropout: float = 0.1) -> nn.Sequential:
-    return nn.Sequential(*[DecoderLayer(num_heads, d_model, d_k, d_v, d_intermediate, dropout)
-                           for _ in range(num_layers)])
+def make_encoder(num_layers: int, num_heads: int, d_model: int, d_k: int, d_v: int, d_intermediate: int,
+                 dropout: float = 0.1) -> Sequential:
+    return Sequential(*[EncoderLayer(num_heads, d_model, d_k, d_v, d_intermediate, dropout)
+                        for _ in range(num_layers)])
+
+
+class DecoderLayer(Module):
+    def __init__(self, num_heads_enc: int, num_heads_dec: int, d_encoder: int, d_decoder: int,
+                 d_atn_enc: int, d_atn_dec: int, d_v_enc: int, d_v_dec: int, d_interm: int, dropout_rate: float = 0.1):
+        super(DecoderLayer, self).__init__()
+        self.dropout = Dropout(dropout_rate)
+        self.mask_mha = MultiHeadAttention(num_heads=num_heads_dec, d_q_in=d_decoder, d_k_in=d_decoder,
+                                           d_v_in=d_decoder, d_atn=d_atn_dec, d_v=d_v_dec,
+                                           d_out=d_decoder, dropout_rate=dropout_rate)
+        self.ln_masked_mha = LayerNorm(d_decoder)
+        self.mha = MultiHeadAttention(num_heads=num_heads_enc, d_q_in=d_decoder, d_k_in=d_encoder,
+                                      d_v_in=d_encoder, d_atn=d_atn_enc, d_v=d_v_enc,
+                                      d_out=d_decoder, dropout_rate=dropout_rate)
+        self.ln_mha = LayerNorm(d_decoder)
+        self.ffn = FFN(d_model=d_decoder, d_intermediate=d_interm, dropout_rate=dropout_rate)
+        self.ln_ffn = LayerNorm(d_decoder)
+
+    def forward(self, inps: DecoderInput) -> DecoderInput:
+        encoder_out, encoder_mask, decoder_in, decoder_mask = inps
+
+        t = decoder_in.shape[1]
+
+        x_drop = self.dropout(decoder_in)
+        dec_atn = self.mask_mha(x_drop, x_drop, x_drop, decoder_mask)
+        dec_atn = dec_atn + x_drop
+        dec_atn = self.ln_masked_mha(dec_atn)
+
+        enc_dec_atn = self.mha(dec_atn, encoder_out, encoder_out, encoder_mask[:, :t, :])
+        enc_dec_atn = self.dropout(enc_dec_atn)
+        enc_dec_atn = dec_atn + enc_dec_atn
+        enc_dec_atn = self.ln_mha(enc_dec_atn)
+
+        out = self.ffn(enc_dec_atn)
+        out = self.dropout(out)
+        out = out + enc_dec_atn
+        out = self.ln_ffn(out)
+        return DecoderInput(encoder_output=encoder_out, encoder_mask=encoder_mask, decoder_input=out,
+                            decoder_mask=decoder_mask)
+
+
+def make_decoder(num_layers: int, num_heads_enc: int, num_heads_dec: int, d_encoder: int, d_decoder: int,
+                 d_atn_enc: int, d_atn_dec: int, d_v_enc: int, d_v_dec: int, d_interm: int, dropout_rate: float = 0.1):
+    return Sequential(*[DecoderLayer(num_heads_enc=num_heads_enc, num_heads_dec=num_heads_dec,
+                                     d_encoder=d_encoder, d_decoder=d_decoder, d_atn_enc=d_atn_enc, d_atn_dec=d_atn_dec,
+                                     d_v_enc=d_v_enc, d_v_dec=d_v_dec, d_interm=d_interm, dropout_rate=dropout_rate)
+                        for _ in range(num_layers)])
 
 
 class Transformer(nn.Module):
@@ -81,13 +90,16 @@ class Transformer(nn.Module):
                  reuse_embedding: bool = True, predictor: Optional[nn.Module] = None) -> None:
         self.device = device
         super(Transformer, self).__init__()
-        self.encoder = Encoder(num_layers=encoder_layers, num_heads=encoder_heads, d_model=d_model,
-                               d_k=d_model // encoder_heads, d_v=d_model // encoder_heads,
-                               d_intermediate=d_intermediate, dropout=dropout).to(self.device)
-        self.decoder = Decoder(num_layers=decoder_layers, num_heads=decoder_heads, d_model=d_model,
-                               d_k=d_model // decoder_heads, d_v=d_model // decoder_heads,
-                               d_intermediate=d_intermediate, dropout=dropout).to(self.device)
-        self.embedding_matrix = torch.nn.Parameter(torch.rand(num_classes, d_model, device=device) * 0.02)
+        self.encoder = make_encoder(num_layers=encoder_layers, num_heads=encoder_heads, d_model=d_model,
+                                    d_k=d_model // encoder_heads, d_v=d_model // encoder_heads,
+                                    d_intermediate=d_intermediate, dropout=dropout).to(self.device)
+        self.decoder = make_decoder(num_layers=decoder_layers, num_heads_enc=decoder_heads,
+                                    num_heads_dec=decoder_heads, d_encoder=d_model, d_decoder=d_model,
+                                    d_atn_enc=d_model//decoder_heads, d_atn_dec=d_model//decoder_heads,
+                                    d_interm=d_intermediate, d_v_dec=d_model//decoder_heads,
+                                    d_v_enc=d_model//encoder_heads)
+        self.embedding_matrix = torch.nn.Parameter(torch.rand(num_classes, d_model, device=device) * 0.02,
+                                                   requires_grad=True)
         self.output_embedder = lambda x: F.embedding(x, self.embedding_matrix, padding_idx=0, scale_grad_by_freq=True)
         if reuse_embedding:
             self.predictor = lambda x: x@(self.embedding_matrix.transpose(1, 0) + 1e-10)
@@ -104,8 +116,8 @@ class Transformer(nn.Module):
 
         b, n, dk = encoder_input.shape
         n_out = decoder_input.shape[1]
-        pe = PE(b, n, dk, dk, device=self.device)
-        pe_dec = PE(b, n_out, dk, dk, device=self.device)
+        pe = make_positional_encodings(b, n, dk, dk, device=self.device)
+        pe_dec = make_positional_encodings(b, n_out, dk, dk, device=self.device)
         encoder_output = self.encoder(EncoderInput(encoder_input + pe, encoder_mask[:, :n, :]))
         decoder_output = self.decoder(DecoderInput(encoder_output=encoder_output.encoder_input,
                                                    encoder_mask=encoder_mask, decoder_input=decoder_input + pe_dec,
@@ -119,7 +131,7 @@ class Transformer(nn.Module):
         with torch.no_grad():
             b, n, dk = encoder_input.shape
             max_steps = encoder_mask.shape[1]
-            pe = PE(b, max_steps, dk, dk, device=self.device)
+            pe = make_positional_encodings(b, max_steps, dk, dk, device=self.device)
             encoder_output = self.encoder(EncoderInput(encoder_input + pe[:, :n], encoder_mask[:, :n, :])).encoder_input
             sos_symbols = (torch.ones(b) * sos_symbol).long().to(self.device)
             decoder_output = self.output_embedder(sos_symbols).unsqueeze(1) + pe[:, 0:1, :]
@@ -158,7 +170,7 @@ class Transformer(nn.Module):
 
         with torch.no_grad():
             b, n, dk = encoder_input.shape
-            pe = PE(b, n, dk, dk, device=self.device)
+            pe = make_positional_encodings(b, n, dk, dk, device=self.device)
 
             encoder_output = self.encoder(EncoderInput(encoder_input + pe, encoder_mask[:, :n, :])).encoder_input
             sos_symbols = (torch.ones(b, device=self.device) * sos_symbol).long()

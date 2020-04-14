@@ -64,8 +64,8 @@ class VRTransformer(nn.Module):
 
         b, n, dk = encoder_input.shape
         n_out = decoder_input.shape[1]
-        pe = PE(b, n, dk, dk, device=self.device)
-        pe_dec = PE(b, n_out, dk, dk, device=self.device)
+        pe = make_positional_encodings(b, n, dk, dk, device=self.device)
+        pe_dec = make_positional_encodings(b, n_out, dk, dk, device=self.device)
         encoder_output = self.encoder(EncoderInput(encoder_input + pe, encoder_mask[:, :n, :]))
 
         # local contextualization
@@ -86,7 +86,7 @@ class VRTransformer(nn.Module):
         with torch.no_grad():
             b, n, dk = encoder_input.shape
             max_steps = encoder_mask.shape[1]
-            pe = PE(b, max_steps, dk, dk, device=self.device)
+            pe = make_positional_encodings(b, max_steps, dk, dk, device=self.device)
             encoder_output = self.encoder(EncoderInput(encoder_input + pe[:, :n], encoder_mask[:, :n, :])).encoder_input
             sos_symbols = (torch.ones(b) * sos_symbol).long().to(self.device)
 

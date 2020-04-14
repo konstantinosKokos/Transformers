@@ -1,11 +1,12 @@
 from typing import NamedTuple, Optional, Callable, Iterable, Any, Union, Tuple, List, Sequence
 from torch.nn import functional as F
 from torch import nn, Tensor, LongTensor
-from torch.nn import ModuleList
 import torch
 import math
 import numpy as np
 from functools import partial
+
+from torch.nn import Module, ModuleList, Linear, Dropout, LayerNorm, Sequential
 
 
 tensor_map = Callable[[Any], Tensor]
@@ -25,7 +26,7 @@ Windows = Sequence[Window]
 #########################################################################################
 
 
-class GELU(nn.Module):
+class GELU(Module):
     def __init__(self):
         super(GELU, self).__init__()
 
@@ -44,8 +45,8 @@ def sigsoftmax(x: Tensor) -> Tensor:
     return sigx/norm
 
 
-def ScaledDotProduct(queries: Tensor, keys: Tensor, values: Tensor,
-                     mask: Optional[LongTensor] = None) -> Tensor:
+def scaled_dot_product(queries: Tensor, keys: Tensor, values: Tensor,
+                       mask: Optional[LongTensor] = None) -> Tensor:
     dk = keys.shape[-1]
     weights = torch.bmm(queries, keys.transpose(2, 1)) / math.sqrt(dk)  # [B, M, N]
     if mask is not None:
@@ -54,18 +55,18 @@ def ScaledDotProduct(queries: Tensor, keys: Tensor, values: Tensor,
     return torch.bmm(weights, values)
 
 
-def MultiHeadAttentionFn(queries: Tensor, keys: Tensor, values: Tensor,
-                         qts: ModuleList, kts: ModuleList, vts: ModuleList, wo: tensor_map,
-                         mask: Optional[LongTensor] = None) -> Tensor:
+def multihead_atn_fn(queries: Tensor, keys: Tensor, values: Tensor,
+                     qts: ModuleList, kts: ModuleList, vts: ModuleList, wo: tensor_map,
+                     mask: Optional[LongTensor] = None) -> Tensor:
     qs = [qt(queries) for qt in qts]
     ks = [kt(keys) for kt in kts]
     vs = [vt(values) for vt in vts]
-    outputs = [ScaledDotProduct(qs[i], ks[i], vs[i], mask) for i in range(len(qs))]
+    outputs = [scaled_dot_product(qs[i], ks[i], vs[i], mask) for i in range(len(qs))]
     outputs = torch.cat(outputs, dim=-1)
     return wo(outputs)
 
 
-def PE(b: int, n: int, d_inp: int, d_model: int, freq: int = 10000, device: str='cpu') -> Tensor:
+def make_positional_encodings(b: int, n: int, d_inp: int, d_model: int, freq: int = 10000, device: str= 'cpu') -> Tensor:
     pe = torch.zeros(n, d_model, device=device)
     position = torch.arange(0, n, device=device, dtype=torch.float).unsqueeze(1)
     div_term = torch.exp(torch.arange(0, d_inp, 2, device=device, dtype=torch.float) *
@@ -75,7 +76,8 @@ def PE(b: int, n: int, d_inp: int, d_model: int, freq: int = 10000, device: str=
     return pe.repeat(b, 1, 1)
 
 
-def PT(b: int, t: int, n: int, d_inp: int, d_model: int, freq: int = 10000, device: str = 'cpu') -> Tensor:
+def make_spatiotemporal_encodings(b: int, t: int, n: int, d_inp: int, d_model: int, freq: int = 10000,
+                                  device: str = 'cpu') -> Tensor:
     pe = torch.zeros(n, d_model, device=device)
     position = torch.arange(0, n, device=device, dtype=torch.float).unsqueeze(1)
     div_term = torch.exp(torch.arange(0, d_inp, 2, device=device, dtype=torch.float) *
@@ -140,7 +142,7 @@ class FuzzyLoss(object):
         return self.loss_fn(x, y_float)
 
 
-def infer_wrapper(transformer: nn.Module, encoder_output: Tensor, encoder_mask: Tensor, b: int) -> partial:
+def infer_wrapper(transformer: Module, encoder_output: Tensor, encoder_mask: Tensor, b: int) -> partial:
     return partial(transformer.infer_one, encoder_output=encoder_output, encoder_mask=encoder_mask, b=b)
 
 
@@ -155,7 +157,7 @@ def recover_batch(original: Tensor, processed: Tensor, ids: Sequence[Tuple[int, 
     return original
 
 
-def count_parameters(model: nn.Module) -> int:
+def count_parameters(model: Module) -> int:
     total_param = 0
     for name, param in model.named_parameters():
         if param.requires_grad:
@@ -172,30 +174,34 @@ def count_parameters(model: nn.Module) -> int:
 #########################################################################################
 
 
-class MultiHeadAttention(nn.Module):
-    def __init__(self, num_heads: int, d_model: int, d_k: int, d_v: int) -> None:
+class MultiHeadAttention(Module):
+    def __init__(self, num_heads: int, d_q_in: int, d_k_in: int, d_v_in: int,
+                 d_atn: int, d_v: int, d_out: int, dropout_rate: float = 0.1) -> None:
         super(MultiHeadAttention, self).__init__()
-        self.q_transformations = nn.ModuleList([nn.Linear(in_features=d_model, out_features=d_k, bias=False)
-                                                for _ in range(num_heads)])
-        self.k_transformations = nn.ModuleList([nn.Linear(in_features=d_model, out_features=d_k, bias=False)
-                                                for _ in range(num_heads)])
-        self.v_transformations = nn.ModuleList([nn.Linear(in_features=d_model, out_features=d_v, bias=False)
-                                                for _ in range(num_heads)])
-        self.Wo = nn.Linear(in_features=num_heads * d_v, out_features=d_model, bias=False)
+        self.q_transformations = ModuleList([Linear(in_features=d_q_in, out_features=d_atn, bias=False)
+                                             for _ in range(num_heads)])
+        self.k_transformations = ModuleList([Linear(in_features=d_k_in, out_features=d_atn, bias=False)
+                                             for _ in range(num_heads)])
+        self.v_transformations = ModuleList([Linear(in_features=d_v_in, out_features=d_v, bias=False)
+                                             for _ in range(num_heads)])
+        self.wo = Linear(in_features=num_heads * d_v, out_features=d_out, bias=False)
+        self.dropout = Dropout(dropout_rate)
 
-    def forward(self, queries: Tensor, keys: Tensor, values: Tensor,
-                mask: Optional[LongTensor] = None) -> Tensor:
-        return MultiHeadAttentionFn(queries, keys, values, self.q_transformations, self.k_transformations,
-                                    self.v_transformations, self.Wo, mask)
+    def forward(self, queries: Tensor, keys: Tensor, values: Tensor, mask: Optional[LongTensor] = None) -> Tensor:
+        mha = multihead_atn_fn(queries, keys, values, self.q_transformations, self.k_transformations,
+                               self.v_transformations, mask)
+        mha = self.dropout(mha)
+        return self.wo(mha)
 
 
-class FFN(nn.Module):
-    def __init__(self, d_intermediate: int, d_model: int) -> None:
+class FFN(Module):
+    def __init__(self, d_model: int, d_intermediate: int, dropout_rate: float = 0.1) -> None:
         super(FFN, self).__init__()
         self.network = nn.Sequential(
-            nn.Linear(in_features=d_model, out_features=d_intermediate),
+            Linear(in_features=d_model, out_features=d_intermediate),
             GELU(),
-            nn.Linear(in_features=d_intermediate, out_features=d_model)
+            Dropout(dropout_rate),
+            Linear(in_features=d_intermediate, out_features=d_model)
         )
 
     def forward(self, x: Tensor) -> Tensor:
