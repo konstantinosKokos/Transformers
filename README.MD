@@ -1,21 +1,5 @@
 #### Transformers
-A working repository containing from-scratch PyTorch implementations of a few Transformer variants.
-
-Currently includes:
-
-* The Vanilla transformer ([Attention is All You Need](https://arxiv.org/pdf/1706.03762.pdf))
-* The Universal transformer ([Universal Transformers](https://arxiv.org/pdf/1807.03819.pdf))
-* A variable length R-transformer (loosely based on [R-Transformers: Recurrent Neural Network Enhanced Transformers](https://arxiv.org/abs/1907.05572))
-
-A few utility functions are taken from [The Annotated Transformer](http://nlp.seas.harvard.edu/2018/04/03/attention.html) 
-tutorial. Important additions, aside the implementation of the Universal Transformer, include PEP-484 style type annotations, more efficient vectorization, and a batch-vectorized implementation of beam search decoding. 
-
-*Note that as of version 1.2 PyTorch provides implementations of the vanilla transformer and its core modules.*
-
-The code has been tested in various generalized translation tasks where it performs consistently and yields high scores with minimal training times. 
-
-An example usecase of the standard transformer for type-logical grammar induction, including training and evaluation scripts,
-can be found [here](https://github.com/konstantinosKokos/Lassy-TLG-Supertagging).
+A working repository containing from-scratch PyTorch implementations of the Transformer and related functions.
 
 If you encounter any issues or require any assistance, do not hesitate to open an issue or get in touch.
 
