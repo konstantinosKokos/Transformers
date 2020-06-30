@@ -3,7 +3,7 @@ from Transformers.encoder import make_encoder
 from Transformers.decoder import make_decoder
 from Transformers.embedding import InvertibleEmbedder
 
-from torch import Tensor, LongTensor, triu, ones, empty, cat
+from torch import Tensor, LongTensor, triu, ones, empty, cat, no_grad
 
 from typing import NoReturn
 
@@ -39,6 +39,7 @@ class Transformer(Module):
         decoded = self.decoder((encoded, encoder_mask, decoder_embeddings, decoder_mask))[2]
         return self.out_embedder.invert(decoded)
 
+    @no_grad()
     def forward_greedy(self, encoder_idxes: LongTensor, encoder_mask: LongTensor, max_decode_length: int,
                        sos_id: int) -> LongTensor:
         self.eval()
